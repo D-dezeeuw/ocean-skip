@@ -2,18 +2,39 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="OceanSkips">
+<meta name="theme-color" content="#0b2438">
+<!-- GitHub Pages sits behind a CDN that can serve a stale deploy for a few
+     minutes, and mobile "add to home screen" bookmarks cache even harder on
+     top of that — these are a first line of defense; sw.js (registered
+     below) is what actually forces a fresh fetch past both layers. -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<link rel="manifest" href='data:application/manifest+json,{"name":"OceanSkips","short_name":"OceanSkips","display":"fullscreen","orientation":"landscape","background_color":"%230b2438","theme_color":"%230b2438"}'>
 <title>OceanSkips — Beach Fiesta 🐟🎉</title>
 <link rel="icon" href="data:,">
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  * {
+    margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent;
+    /* touch-action is not inherited: set it on every element so double-tap /
+       pinch zoom is dead on the overlay buttons and cards too, while pan-x
+       pan-y keeps the shop panel and fish-card row scrollable. */
+    touch-action: pan-x pan-y;
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+  }
   html, body { height: 100%; overflow: hidden; }
   body {
     font-family: 'Comic Sans MS', 'Chalkboard SE', 'Segoe UI', system-ui, sans-serif;
     background: #0b2438; color: #123;
-    -webkit-user-select: none; user-select: none; touch-action: none;
+    touch-action: none;
   }
-  #game { position: fixed; inset: 0; display: block; }
+  #game { position: fixed; inset: 0; display: block; touch-action: none; }
 
   /* ---------- overlay screens ---------- */
   .screen {
@@ -331,14 +352,36 @@ if (!CanvasRenderingContext2D.prototype.roundRect) {
     return this;
   };
 }
-let W = 0, H = 0, DPR = 1;
+let W = 0, H = 0, DPR = 1, VS = 1;
 function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, 2);
-  W = window.innerWidth; H = window.innerHeight;
-  cvs.width = Math.round(W * DPR); cvs.height = Math.round(H * DPR);
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  // Size from the visual viewport (the browser's nav/tool bars shrink it on
+  // phones) and pin the canvas CSS box to the same numbers — if the buffer
+  // and the CSS box ever disagree, the browser stretches the buffer and the
+  // whole game reads as "zoomed in" with the water pushed off-screen.
+  const vv = window.visualViewport;
+  const cssW = Math.max(1, Math.round(vv ? vv.width : window.innerWidth));
+  const cssH = Math.max(1, Math.round(vv ? vv.height : window.innerHeight));
+  cvs.style.width = cssW + 'px';
+  cvs.style.height = cssH + 'px';
+  cvs.width = Math.round(cssW * DPR);
+  cvs.height = Math.round(cssH * DPR);
+  // Short landscape viewports (browser chrome eating the height) get the
+  // same scene zoomed out instead of cropped: below 480 CSS px the world is
+  // drawn smaller and the logical canvas grows, so the toss arc, luchador
+  // and water line always fit on screen together.
+  VS = clamp(cssH / 480, 0.62, 1);
+  W = cssW / VS; H = cssH / VS;
+  ctx.setTransform(DPR * VS, 0, 0, DPR * VS, 0, 0);
 }
 window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => {
+  // iOS reports stale viewport sizes right after rotating; snap back to
+  // the top-left and re-measure once the new orientation has settled.
+  window.scrollTo(0, 0);
+  setTimeout(() => { window.scrollTo(0, 0); resize(); }, 250);
+});
+if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
 resize();
 
 /* ---------- water: stacked sines, rougher with distance ---------- */
@@ -1248,6 +1291,24 @@ cvs.addEventListener('pointerdown', (e) => { e.preventDefault(); press(); });
 window.addEventListener('pointerup', release);
 window.addEventListener('pointercancel', release);
 
+/* iOS Safari ignores user-scalable=no, so kill its zoom gestures by hand:
+   pinch (gesture* + multi-touch move) and double-tap (quick second touchend).
+   Interactive elements are exempt from the double-tap guard so rapid
+   button-mashing on "Play again" still clicks. */
+for (const ev of ['gesturestart', 'gesturechange', 'gestureend'])
+  document.addEventListener(ev, (e) => e.preventDefault());
+document.addEventListener('touchmove', (e) => {
+  if (e.touches.length > 1) e.preventDefault();
+}, { passive: false });
+let lastTouchEnd = 0;
+document.addEventListener('touchend', (e) => {
+  const now = performance.now();
+  if (now - lastTouchEnd < 350 && !e.target.closest('button, .card, .cards, .panel'))
+    e.preventDefault();
+  lastTouchEnd = now;
+}, { passive: false });
+document.addEventListener('dblclick', (e) => e.preventDefault());
+
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space' || e.code === 'Enter') {
     e.preventDefault();
@@ -1311,8 +1372,28 @@ window.OceanSkips = {
     return { state, x: run.x, y: run.y, vx: run.vx, vy: run.vy,
              dist: run.dist, skips: run.skips, energy: run.energy };
   },
+  get view() {
+    return { W, H, VS, DPR, seaLine: seaLine(), camX: cam.x, camY: cam.y,
+             tossApex: TOSS_Y + 83 };
+  },
   warp(x) { cam.x = x; menuWrapLimit = Math.max(4200, x + 8000); },
 };
+
+/* ---------- cache-busting service worker ---------- */
+// serviceWorker.register() throws under file:// (used by the headless
+// layout tests and by anyone opening this file straight off disk) — only
+// register when actually served over http(s).
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+  // controllerchange fires when a new sw.js version takes over; reload once
+  // so the fresh build shows up immediately instead of needing a second
+  // visit. Skip it on the very first-ever install (hadController is false),
+  // since there's nothing stale to replace yet.
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController) location.reload();
+  });
+}
 
 })();
 </script>
