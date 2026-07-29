@@ -558,6 +558,50 @@ function levelCompPhase(levelIdx, compIdx) {
   return hash01(levelIdx * 17.3 + compIdx * 5.7 + levelPhaseSeed) * TAU;
 }
 
+/* ---------- intro ramp: the very first 1000m (= levels 0-3's combined
+   span) is one continuous, slowly-evolving swell instead of 4 discrete
+   250m blocks — starts as a long, barely-curved sine ("two screens" of
+   wavelength) and only gradually shortens/steepens/gains a concave crest
+   as it approaches level 3's "Sharp chop" character, which it then
+   settles into and blends with over the last stretch before handing off
+   to the ordinary discrete level system at level 4. Only ever runs once,
+   at the true start of a run — x only increases, so a repeat cycle's
+   "level 0" territory (well past x=INTRO_PX) always uses the normal
+   discrete blocks, giving a quicker breather on repeat cycles. */
+const INTRO_PX = 1000 * PX_PER_M;               // 40,000 px = levels 0-3's span
+const INTRO_START = { a: 5,  l: 1900, s: 16 };  // near-flat, two-screens-long swell
+const INTRO_TARGET = WAVE_LEVELS[3].comps[0];   // hand off into 'Sharp chop'
+const INTRO_START_ROUGH = 0.5;                  // calmer than level 0's 0.65
+const INTRO_TARGET_ROUGH = WAVE_LEVELS[3].rough;
+const INTRO_CONCAVE_START = 0.4; // concave crest only fades in after the ramp is 40% done
+function introParamsAt(x) {
+  const w = smoothstep(0, INTRO_PX, x);
+  return {
+    w,
+    a: lerp(INTRO_START.a, INTRO_TARGET.a, w),
+    l: lerp(INTRO_START.l, INTRO_TARGET.l, w),
+    s: lerp(INTRO_START.s, INTRO_TARGET.s, w),
+    rough: lerp(INTRO_START_ROUGH, INTRO_TARGET_ROUGH, w),
+    concaveMix: clamp((w - INTRO_CONCAVE_START) / (1 - INTRO_CONCAVE_START), 0, 1),
+  };
+}
+function introRamp(x, t) {
+  const p = introParamsAt(x);
+  const k = TAU / p.l;
+  const ph = k * x + p.s * k * t + levelCompPhase(-1, 0);
+  const sy = p.a * Math.sin(ph), sslope = p.a * k * Math.cos(ph), svy = p.a * (p.s * k) * Math.cos(ph);
+  let y = sy, slope = sslope, vy = svy;
+  if (p.concaveMix > 0) {
+    const q = INTRO_TARGET.q;
+    const pk = peakProfile(ph, q);
+    const cy = p.a * (pk.y - peakOffset(q)), cslope = p.a * pk.d * k, cvy = p.a * pk.d * (p.s * k);
+    y = lerp(sy, cy, p.concaveMix);
+    slope = lerp(sslope, cslope, p.concaveMix);
+    vy = lerp(svy, cvy, p.concaveMix);
+  }
+  return { y, slope, vy, rough: p.rough };
+}
+
 function levelInfoAt(x) {
   const px = Math.max(0, x);
   const cycle = Math.floor(px / PX_PER_CYCLE);
@@ -583,6 +627,12 @@ function levelBlendAt(x) {
   return { levelIdx: info.levelIdx, mult: info.mult, nextIdx, nextMult, w };
 }
 function roughAt(x) {
+  if (x < INTRO_PX) {
+    const introRough = introParamsAt(x).rough;
+    if (x < INTRO_PX - LEVEL_BLEND_PX) return introRough;
+    const w2 = smoothstep(INTRO_PX - LEVEL_BLEND_PX, INTRO_PX, x);
+    return lerp(introRough, WAVE_LEVELS[4].rough, w2);
+  }
   const b = levelBlendAt(x);
   const cur = WAVE_LEVELS[b.levelIdx].rough * b.mult;
   if (b.w <= 0) return cur;
@@ -610,6 +660,16 @@ function evalLevel(levelIdx, mult, x, t) {
   return { y, slope, vy };
 }
 function surfaceAt(x, t) {
+  if (x < INTRO_PX) {
+    const intro = introRamp(x, t);
+    if (x < INTRO_PX - LEVEL_BLEND_PX) return intro;
+    const w2 = smoothstep(INTRO_PX - LEVEL_BLEND_PX, INTRO_PX, x);
+    const nxt = evalLevel(4, 1, x, t);
+    return {
+      y: lerp(intro.y, nxt.y, w2), slope: lerp(intro.slope, nxt.slope, w2),
+      vy: lerp(intro.vy, nxt.vy, w2), rough: lerp(intro.rough, WAVE_LEVELS[4].rough, w2),
+    };
+  }
   const b = levelBlendAt(x);
   const cur = evalLevel(b.levelIdx, b.mult, x, t);
   const curRough = WAVE_LEVELS[b.levelIdx].rough * b.mult;
@@ -2141,6 +2201,7 @@ window.OceanSkips = {
   },
   roughAt, surfaceAt, levelInfoAt,   // exposed for wave-tuning tests
   WAVE_LEVELS, PX_PER_LEVEL, LEVELS_PER_CYCLE, PX_PER_CYCLE, CYCLE_GROWTH, LEVEL_BLEND_PX,
+  introParamsAt, INTRO_PX,   // exposed for intro-ramp tuning tests
   windAt, wind, rollWind, stats, shelterTopAt,   // exposed for wind-tuning tests
   get windStreaks() { return windStreaks.map(s => ({ ...s })); },   // debug only
   get flightEvents() {
