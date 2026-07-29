@@ -488,9 +488,22 @@ const WIND_RAMP = 220;      // px of altitude to go from sheltered to full wind
 let wind = { base: 0, dir: 1, gustAmp: 0 };
 let windGustComps = [];
 let gustBoostT = 0; // seconds remaining on a triggered gust-front event's wind spike
+// {base, dir} are seeded from the calendar day (not Math.random()), so
+// every attempt today sees the same core wind and a best-distance chase
+// stays fair; gustAmp/gust component phases still vary per attempt for
+// texture, since those are a secondary effect.
+function dailySeed() {
+  const d = new Date();
+  const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return h;
+}
 function rollWind() {
-  wind.dir = Math.random() < 0.8 ? 1 : -1;     // mostly tailwind, occasional headwind day
-  wind.base = rand(70, 230);
+  const seed = dailySeed();
+  const h1 = hash01(seed), h2 = hash01(seed * 1.37 + 91.3);
+  wind.dir = h2 < 0.8 ? 1 : -1;     // mostly tailwind, occasional headwind day
+  wind.base = lerp(20, 230, h1);    // some days are genuinely calm, deterministic per day
   wind.gustAmp = rand(0.15, 0.35);
   windGustComps = [
     { w: 0.5, s: rand(0.5, 1.0), k: TAU / 900, p: rand(0, TAU) },
@@ -498,6 +511,7 @@ function rollWind() {
     { w: 0.2, s: rand(0.2, 0.4), k: TAU / 2200, p: rand(0, TAU) },
   ];
 }
+rollWind(); // populate today's wind immediately so the menu can show it
 function smoothstep(e0, e1, y) {
   const t = clamp((y - e0) / (e1 - e0), 0, 1);
   return t * t * (3 - 2 * t);
@@ -627,7 +641,10 @@ const run = {
   tossVy: 0, swingT: -1,          // swingT ≥ 0 → bat swing anim clock
   energy: 0, maxEnergy: 100,
   lastBounceT: 0, boostSfxT: 0, zoneShown: 0,
+  hopApex: 0,   // highest y reached since the last bounce — Big Air scoring
 };
+const BIG_AIR_Y = 260; // world y a hop's apex must clear to score Big Air
+let bigAirCount = 0; // debug/test counter, not shown in-game
 
 let foods = [];        // {x, baseY, taken, phase}
 let nextFoodX = 0;
@@ -753,9 +770,49 @@ function stepParticles(dt) {
     }
   }
   particles = particles.filter(p => p.life > 0).concat(pops);
+  capParticles();
   for (const p of popups) { p.t += dt; p.y += 42 * dt; }
   popups = popups.filter(p => p.t < p.life);
   foamPatches = foamPatches.filter(f => time - f.born < 2);
+}
+// global particle budget: ambient bubbles are the lowest priority and go
+// first, then whichever gameplay particle (splash/spark) has the least
+// life left — keeps a busy skip chain from ballooning the draw count
+const PARTICLE_CAP = 220;
+function capParticles() {
+  const over = particles.length - PARTICLE_CAP;
+  if (over <= 0) return;
+  particles.sort((a, b) => {
+    const pa = a.kind === 'bubble' ? 0 : 1, pb = b.kind === 'bubble' ? 0 : 1;
+    return pa !== pb ? pa - pb : a.life - b.life;
+  });
+  particles.splice(0, over);
+}
+
+// respects the OS/browser "reduce motion" setting: skips the busiest purely
+// decorative motion (wind streaks, gust shimmer, thermal wobble) while
+// keeping gameplay-critical feedback (the gust popup/sfx, the gust's actual
+// wind effect) untouched
+const REDUCED_MOTION = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+// auto quality scaler: if the smoothed frame time creeps past 20ms (< 50fps
+// equivalent), drop the heaviest optional layers one at a time — second
+// caustics layer, then god rays, then new ambient bubble spawns — restoring
+// them in reverse once headroom returns. Never touches gameplay-critical
+// rendering (fish, water contact, HUD).
+let smoothFrameMs = 16.7;
+const quality = { causticsLayer2: true, rays: true, ambientBubbles: true };
+function updateQualityScaler(frameMs) {
+  smoothFrameMs = lerp(smoothFrameMs, clamp(frameMs, 0, 100), 0.1);
+  if (smoothFrameMs > 20) {
+    if (quality.causticsLayer2) quality.causticsLayer2 = false;
+    else if (quality.rays) quality.rays = false;
+    else if (quality.ambientBubbles) quality.ambientBubbles = false;
+  } else if (smoothFrameMs < 14) {
+    if (!quality.ambientBubbles) quality.ambientBubbles = true;
+    else if (!quality.rays) quality.rays = true;
+    else if (!quality.causticsLayer2) quality.causticsLayer2 = true;
+  }
 }
 // stable per-slot ambient bubble seep columns rising from the seabed/kelp —
 // spawn is gated by a per-slot timer so density stays steady regardless of
@@ -763,6 +820,7 @@ function stepParticles(dt) {
 // every time rather than rerolling which columns exist each frame
 let bubbleColTimer = 0;
 function stepBubbleColumns(dt) {
+  if (!quality.ambientBubbles) return;
   bubbleColTimer -= dt;
   if (bubbleColTimer > 0) return;
   bubbleColTimer = rand(0.3, 0.55);
@@ -786,7 +844,7 @@ function startRun() {
   rollWind();
   run.x = BAT_X + 40; run.y = TOSS_Y; run.vx = 0; run.vy = 0;
   run.skips = 0; run.food = 0; run.dist = 0; run.sinkT = 0; run.spinning = 0;
-  run.tossVy = 0; run.swingT = -1; run.lastBounceT = -1; run.zoneShown = 0;
+  run.tossVy = 0; run.swingT = -1; run.lastBounceT = -1; run.zoneShown = 0; run.hopApex = TOSS_Y;
   run.maxEnergy = st.maxEnergy;
   run.energy = Math.min(run.maxEnergy, 55 + save.up.chili * 8);
   cam.x = 0; cam.y = 0;
@@ -830,6 +888,7 @@ function swing() {
   run.vy = Math.sin(a) * p;
   state = 'fly';
   held = false;                       // require a fresh press for boosting
+  run.hopApex = run.y;
   sfx.crack(q);
   puff(run.x, run.y, 12, '#ffe9b0', 300, 800, 4, 0.4);
   setHint('Hold anywhere to BOOST 🌶️ — golden snacks refill energy!');
@@ -924,6 +983,7 @@ function stepPhysics(dt) {
     run.x += run.vx * dt;
     run.y += run.vy * dt;
     run.dist = Math.max(run.dist, run.x - BAT_X);
+    run.hopApex = Math.max(run.hopApex, run.y);
     run.wiggle += dt * (6 + Math.hypot(run.vx, run.vy) * 0.004);
     updateWindAudio(rsp, run.y);
 
@@ -983,6 +1043,18 @@ function stepPhysics(dt) {
         run.vx = tx * 0.955 - vn * e * nx;
         run.vy = ty * 0.955 - vn * e * ny + Math.max(0, s.vy) * 0.6 * st.waveGrip;
         run.y = s.y + 0.5;
+
+        // Big Air: reward the hop that just ended if its apex cleared
+        // BIG_AIR_Y, rewarding the risky high arcs wind makes attractive —
+        // then start tracking the next hop fresh
+        if (run.hopApex > BIG_AIR_Y) {
+          const bonus = clamp(Math.round((run.hopApex - BIG_AIR_Y) / 45), 1, 6);
+          run.food += bonus; save.food += bonus;
+          bigAirCount++;
+          popup(`Big Air! +${bonus}🟡`, run.x, run.hopApex, { size: 22, color: '#ffd93b' });
+          sfx.collect();
+        }
+        run.hopApex = run.y;
 
         const newSp = Math.hypot(run.vx, run.vy);
         const roughPenalty = 1 + (s.rough - 1) * 0.38 * (1 - st.seaLegs);
@@ -1076,7 +1148,7 @@ function drawSky(pal) {
     ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1;
   }
 
-  drawWindStreaks(pal);
+  if (!REDUCED_MOTION) drawWindStreaks(pal);
 }
 function cloudBlob(x, y, s) {
   ctx.beginPath();
@@ -1539,10 +1611,10 @@ function drawSea(pal) {
   ctx.save();
   ctx.clip();
   drawKelpBeds(pal);
-  drawGodRays(pal);
+  if (quality.rays) drawGodRays(pal);
   if (assets.caustics.loaded) {
     drawCausticsLayer(1.7, 14, 6, clamp(pal.light * 0.14, 0.015, 0.14), topY, H);
-    drawCausticsLayer(2.8, -9, 4, clamp(pal.light * 0.08, 0.01, 0.08), topY, H);
+    if (quality.causticsLayer2) drawCausticsLayer(2.8, -9, 4, clamp(pal.light * 0.08, 0.01, 0.08), topY, H);
   }
   ctx.restore();
 
@@ -1713,7 +1785,7 @@ function render() {
   drawSky(pal);
   drawSea(pal);
   drawBeach();
-  if (state === 'fly' || state === 'sink') { drawGustFronts(); drawThermals(); }
+  if (!REDUCED_MOTION && (state === 'fly' || state === 'sink')) { drawGustFronts(); drawThermals(); }
   drawLuchador();
   drawPicado();      // behind the action so the ring and fish stay readable
   drawSweetRing();
@@ -1784,8 +1856,16 @@ function buildMenu() {
   }
   refreshMenuStats();
 }
+function windLabel() {
+  const mag = Math.abs(wind.base);
+  const dirWord = wind.dir > 0 ? 'tailwind' : 'headwind';
+  if (mag < 40) return 'Dead calm today 🌊';
+  if (mag < 90) return `Light ${dirWord} today 💨`;
+  if (mag < 160) return `Fresh ${dirWord} today 💨💨`;
+  return `STRONG ${dirWord} today 💨💨💨`;
+}
 function refreshMenuStats() {
-  $('menuStats').textContent = `🏆 best: ${save.best} m · 🟡 ${save.food} · runs: ${save.runs}`;
+  $('menuStats').textContent = `🏆 best: ${save.best} m · 🟡 ${save.food} · runs: ${save.runs} · ${windLabel()}`;
 }
 function buildShop() {
   $('shopFood').textContent = `🟡 ${save.food} fish food`;
@@ -1881,6 +1961,7 @@ function frame(now) {
   const dt = Math.min((now - last) / 1000, 0.1);
   last = now;
   time += dt;
+  updateQualityScaler(dt * 1000);
 
   acc += dt;
   let guard = 0;
@@ -1920,6 +2001,9 @@ window.OceanSkips = {
   get flightEvents() {
     return { gustEvents: gustEvents.map(g => ({ ...g })), thermals: thermals.map(t => ({ ...t })), gustBoostT };
   },
+  get bigAirCount() { return bigAirCount; },
+  get particleCount() { return particles.length; },
+  quality, updateQualityScaler, PARTICLE_CAP, REDUCED_MOTION, windLabel,   // exposed for perf/meta tests
   selectFish(id) { const f = FISH.find(x => x.id === id); if (f) { fishDef = f; save.fish = f.id; } },
   warp(x) { cam.x = x; menuWrapLimit = Math.max(4200, x + 8000); },
 };
