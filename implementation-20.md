@@ -12,19 +12,22 @@ wave-skimming flight stays sheltered.
   call OpenRouter's `google/gemini-2.5-flash-image`, chroma-key/trim/resize with
   `sharp`, cache to `tools/art-cache/`, and `tools/inline-assets.mjs` writes the
   selected subset into `index.html`'s `GENERATED_ASSETS` block. See `tools/README.md`.
-- 🔶 **M2 — Water core**, partial: feature 5 (multi-stop depth gradient) and feature 6
-  (two-layer scrolling caustics via the generated tile) are done in `drawSea`. Feature
-  11 (sun-glint band) and the foam-trail half of feature 10 are not done yet — only the
-  crest-stamp half (foam brush images on cusped crests, replacing the plain flecks).
-  Feature 7 (god rays) also landed early, pulled in from M3, using the generated ray
-  brush. Feature 9 (kelp beds) also landed early from M3 — sine-swayed, density-by-zone,
-  using the two generated frond sprites.
-- ⬜ Feature 3 (fish portrait card art) and feature 4 numbering shift — see the manifest;
-  fish portraits are still the procedural `drawFishShape` thumbnails, not generated art.
-- ⬜ Feature 8 (bubbles) intentionally skipped for now: the two generated bubble sprites
-  show visible chroma-key edge fringing at their small in-game size (≤48px) — see
-  `tools/README.md`'s known-limitation note — so bubbles should stay procedural
-  (canvas circle + highlight) rather than use the generated sprites as-is.
+- ✅ **M2 — Water core** (5, 6, 7, 9, 10, 11): multi-stop depth gradient, two-layer
+  scrolling caustics, god rays, sine-swayed kelp beds, foam-stamp crests + persistent
+  post-skip foam patches (`drawFoamPatches`), and a hash-twinkle sun-glint band are all
+  in `drawSea`/`drawFish`.
+- ✅ **M3 — Water life** (8, 12; 3/4 done as fish portraits): bubbles are **procedural**,
+  not the generated sprites — the two AI bubble sprites showed visible chroma-key edge
+  fringing at their small in-game size (≤48px, see `tools/README.md`), so `spawnBubble()`
+  draws a translucent ring + highlight instead. Three bubble sources: ambient seep
+  columns (`stepBubbleColumns`), skip-contact bursts, and the sink-state trail. Sink-cam
+  polish: depth-fog vignette (`drawSinkOverlay`) and multiply-blended caustic dapples on
+  the sinking fish. Fish portrait card art (feature 4) is done — 5 generated portraits
+  replace the procedural menu-card thumbnails, with `drawFishShape` as the automatic
+  fallback until each image decodes.
+- Feature 3's sky/horizon backdrops (per-zone parallax strips) are descoped — the
+  procedural sky already reads well and the payoff didn't justify 3 more generations
+  under the asset budget.
 - Everything in Phase C (wind, 13-18) and Phase D (19-20) is still as originally planned
   below, untouched.
 
