@@ -28,8 +28,24 @@ wave-skimming flight stays sheltered.
 - Feature 3's sky/horizon backdrops (per-zone parallax strips) are descoped — the
   procedural sky already reads well and the payoff didn't justify 3 more generations
   under the asset budget.
-- Everything in Phase C (wind, 13-18) and Phase D (19-20) is still as originally planned
-  below, untouched.
+- ✅ **M4 — Wind core** (13, 14, 16): `windAt(x, y, t)` implements the shear profile
+  exactly as specced — `shelterTopAt(x)` (a `roughAt`-scaled wave-amplitude estimate)
+  plus a `smoothstep` ramp over `WIND_RAMP` (220px) of altitude, times a 3-component
+  `gustAt` modulation, times a small open-ocean `distBoost`. `rollWind()` picks
+  `{base, dir, gustAmp}` per run in `startRun()` (mostly tailwind, occasional headwind
+  day). `stepPhysics`'s fly-state drag and glide lift now act on **air-relative**
+  velocity (`rvx = run.vx - windAt(...) * st.sail`), so tailwinds push instead of only
+  ever slowing the fish down. Every `FISH[]` entry got a `sail` stat (Volador highest,
+  Don Atún lowest) feeding `stats().sail`. Visualization: altitude-layered wind-streak
+  particles (`stepWindStreaks`/`drawWindStreaks`), cloud drift / bunting flap / umbrella
+  flutter all keyed to `wind.base`, an HUD wind chip, and a start-of-run hint on windy
+  days. `tests/wind.mjs` is a pure numeric regression test (no browser) verifying the
+  shelter/gust math and that low skims stay within ~10% of calm distance while high arcs
+  show a clear tailwind > calm > headwind ordering — confirms the "rebalance so calm-day
+  distances stay comparable" goal is met by the shelter mechanic itself, with no
+  `LAUNCH_BASE` changes needed.
+- Everything in Phase C's remaining features (15, 17, 18) and Phase D (19-20) is still
+  as originally planned below, untouched.
 
 ---
 

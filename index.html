@@ -178,6 +178,7 @@
   <span class="chip" id="hudDist">0 m</span>
   <span class="chip" id="hudSpeed">0 <small>km/h</small></span>
   <span class="chip" id="hudFood">🟡 0</span>
+  <span class="chip hidden" id="hudWind">💨 0</span>
 </div>
 <div id="energy" class="hidden"><span>🌶️</span><div class="ebar"><i id="efill"></i></div></div>
 <div id="hint" class="hidden"></div>
@@ -261,23 +262,23 @@ const BOOST_DRAIN = 30;         // energy per second
 const FISH = [
   { id: 'chispa', name: 'Chispa', species: 'the Sardine', shape: 'slim',
     blurb: 'Queen of the bounce. Skips like she was born for it. (She was.)',
-    power: 1.0, bounce: 0.58, drag: 0.10, lift: 0, minSkim: 250, seaLegs: 0.30, waveGrip: 1.0, size: 40,
+    power: 1.0, bounce: 0.58, drag: 0.10, lift: 0, minSkim: 250, seaLegs: 0.30, waveGrip: 1.0, size: 40, sail: 1.0,
     colors: { body: '#43c6e0', belly: '#eef9fc', fin: '#f0567e' } },
   { id: 'volador', name: 'Volador', species: 'the Flying Fish', shape: 'wing',
     blurb: 'Barely touches the water at all. Big waves ruin the hairdo.',
-    power: 0.95, bounce: 0.50, drag: 0.045, lift: 0.55, minSkim: 240, seaLegs: 0.10, waveGrip: 1.2, size: 42,
+    power: 0.95, bounce: 0.50, drag: 0.045, lift: 0.55, minSkim: 240, seaLegs: 0.10, waveGrip: 1.2, size: 42, sail: 1.35,
     colors: { body: '#7f9bd8', belly: '#eef2ff', fin: '#ffd93b' } },
   { id: 'globo', name: 'Globo', species: 'the Pufferfish', shape: 'puff',
     blurb: 'Round. Bouncy. Extremely round. Boings off every wave.',
-    power: 0.80, bounce: 0.80, drag: 0.16, lift: 0, minSkim: 200, seaLegs: 0.45, waveGrip: 0.9, size: 44,
+    power: 0.80, bounce: 0.80, drag: 0.16, lift: 0, minSkim: 200, seaLegs: 0.45, waveGrip: 0.9, size: 44, sail: 1.1,
     colors: { body: '#f2b04e', belly: '#ffedc9', fin: '#e0642f' } },
   { id: 'rayo', name: 'Rayo', species: 'the Mackerel', shape: 'dart',
     blurb: 'Launches like a rocket. Lands like a coin flip.',
-    power: 1.25, bounce: 0.48, drag: 0.075, lift: 0, minSkim: 300, seaLegs: 0.25, waveGrip: 0.8, size: 44,
+    power: 1.25, bounce: 0.48, drag: 0.075, lift: 0, minSkim: 300, seaLegs: 0.25, waveGrip: 0.8, size: 44, sail: 0.75,
     colors: { body: '#59c9a5', belly: '#e2f8f0', fin: '#8e44ad' } },
   { id: 'donatun', name: 'Don Atún', species: 'the Tuna', shape: 'tank',
     blurb: 'Heavy. Slow to impress. The rough sea respects him.',
-    power: 1.15, bounce: 0.50, drag: 0.12, lift: 0, minSkim: 280, seaLegs: 0.90, waveGrip: 0.5, size: 54,
+    power: 1.15, bounce: 0.50, drag: 0.12, lift: 0, minSkim: 280, seaLegs: 0.90, waveGrip: 0.5, size: 54, sail: 0.55,
     colors: { body: '#5b6ea8', belly: '#e2e8f6', fin: '#2c8c74' } },
 ];
 
@@ -444,6 +445,40 @@ function surfaceAt(x, t) {
   return { y, slope, vy, rough: r };
 }
 
+/* ---------- wind: boundary-layer shear, sheltered near the waves,
+   full-strength aloft — high arcs catch it, low skims don't ---------- */
+const WIND_WAVE_AMP = 22;   // px — rough per-zone wave-amplitude estimate
+const WIND_RAMP = 220;      // px of altitude to go from sheltered to full wind
+let wind = { base: 0, dir: 1, gustAmp: 0 };
+let windGustComps = [];
+function rollWind() {
+  wind.dir = Math.random() < 0.8 ? 1 : -1;     // mostly tailwind, occasional headwind day
+  wind.base = rand(70, 230);
+  wind.gustAmp = rand(0.15, 0.35);
+  windGustComps = [
+    { w: 0.5, s: rand(0.5, 1.0), k: TAU / 900, p: rand(0, TAU) },
+    { w: 0.3, s: rand(-0.8, -0.4), k: TAU / 380, p: rand(0, TAU) },
+    { w: 0.2, s: rand(0.2, 0.4), k: TAU / 2200, p: rand(0, TAU) },
+  ];
+}
+function smoothstep(e0, e1, y) {
+  const t = clamp((y - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+function shelterTopAt(x) { return roughAt(x) * WIND_WAVE_AMP; }
+function gustAt(x, t) {
+  let s = 0;
+  for (const c of windGustComps) s += c.w * Math.sin(t * c.s + x * c.k + c.p);
+  return 1 + wind.gustAmp * s;
+}
+function windAt(x, y, t) {
+  const top = shelterTopAt(x);
+  const shelter = smoothstep(top, top + WIND_RAMP, y);
+  // it blows a little harder out in the open ocean, same ramp shape as roughAt
+  const distBoost = lerp(1, 1.3, clamp((roughAt(x) - 1) / (ROUGH_MAX - 1), 0, 1));
+  return wind.base * distBoost * wind.dir * shelter * gustAt(x, t);
+}
+
 /* ---------- environment palettes by distance ---------- */
 const ZONES = [
   { x: 0,     skyT: '#8fd8ff', skyB: '#ffe9c9', seaT: '#37c8da', seaD: '#0b6e8a', light: 1.0 },
@@ -531,6 +566,32 @@ function initClouds() {
 }
 initClouds();
 
+// wind-streak particles: fast horizontal streaks up high, calm near the
+// waves — the shear profile made visible so players learn "fly high for
+// wind" without reading anything. Screen-space, purely decorative.
+let windStreaks = [];
+function initWindStreaks() {
+  windStreaks = [];
+  for (let i = 0; i < 16; i++) windStreaks.push({ frac: rand(-1, 1), yFrac: rand(0, 1), len: rand(18, 46), shelterAmt: 0, worldY: 0 });
+}
+initWindStreaks();
+function stepWindStreaks(dt) {
+  const mag = Math.abs(wind.base);
+  if (mag < 10) return;
+  const lookX = (state === 'fly' || state === 'sink') ? run.x : cam.x + W * 0.4;
+  const top = shelterTopAt(lookX);
+  for (const s of windStreaks) {
+    s.worldY = lerp(20, 520, s.yFrac);
+    s.shelterAmt = smoothstep(top, top + WIND_RAMP, s.worldY);
+    const speedPxPerSec = wind.dir * mag * (0.12 + s.shelterAmt * 1.1);
+    s.frac += (speedPxPerSec * dt) / (W || 900);
+    if (s.frac > 1.15 || s.frac < -1.15) {
+      s.frac = s.frac > 0 ? -1.15 : 1.15;
+      s.yFrac = rand(0, 1); s.len = rand(18, 46);
+    }
+  }
+}
+
 /* ---------- derived stats (fish + upgrades) ---------- */
 function stats() {
   const u = save.up;
@@ -544,6 +605,7 @@ function stats() {
     minSkim: fishDef.minSkim,
     seaLegs: fishDef.seaLegs,
     waveGrip: fishDef.waveGrip,
+    sail: fishDef.sail * (1 + (u.sail || 0) * 0.1),
   };
 }
 
@@ -646,6 +708,7 @@ function startRun() {
   const st = stats();
   state = 'ready';
   rollWaves();
+  rollWind();
   run.x = BAT_X + 40; run.y = TOSS_Y; run.vx = 0; run.vy = 0;
   run.skips = 0; run.food = 0; run.dist = 0; run.sinkT = 0; run.spinning = 0;
   run.tossVy = 0; run.swingT = -1; run.lastBounceT = -1; run.zoneShown = 0;
@@ -656,7 +719,13 @@ function startRun() {
   foods = []; nextFoodX = 800; particles = []; popups = [];
   showScreen(null);
   hud(true);
-  setHint('Tap to toss your fish up!');
+  let windHint = '';
+  if (Math.abs(wind.base) >= 140) {
+    windHint = wind.dir > 0 ? ' 💨 Strong tailwind — fly HIGH!' : ' 💨 Headwind today — stay low!';
+  } else if (Math.abs(wind.base) >= 25) {
+    windHint = wind.dir > 0 ? ' 💨 Light tailwind.' : ' 💨 Light headwind.';
+  }
+  setHint('Tap to toss your fish up!' + windHint);
 }
 function toss() {
   state = 'toss';
@@ -755,18 +824,25 @@ function stepPhysics(dt) {
         life: 0.35, maxLife: 0.35, size: rand(2, 5), color: '#ff9800', grav: 0 });
     }
 
-    // air drag + gravity (+ glide lift for the flying fish)
-    const sp = Math.hypot(run.vx, run.vy);
-    const dragF = st.drag * sp * 0.0016 * dt;
-    run.vx -= run.vx * dragF;
-    run.vy -= run.vy * dragF;
+    // air drag + gravity (+ glide lift for the flying fish) — computed
+    // against AIR-RELATIVE velocity, so a tailwind actually pushes the fish
+    // toward wind speed instead of only ever slowing it down. Wind is near
+    // zero close to the waves (shelterTopAt) and ramps to full strength over
+    // WIND_RAMP px of altitude, so low skims fly on raw launch power while
+    // high arcs catch the wind.
+    const wx = windAt(run.x, run.y, time) * st.sail;
+    const rvx = run.vx - wx, rvy = run.vy;
+    const rsp = Math.hypot(rvx, rvy);
+    const dragF = st.drag * rsp * 0.0016 * dt;
+    run.vx -= rvx * dragF;
+    run.vy -= rvy * dragF;
     let g = G;
-    if (st.lift > 0 && run.vy < 0) g *= 1 - st.lift * clamp(run.vx / 1100, 0, 1) * 0.62;
+    if (st.lift > 0 && run.vy < 0) g *= 1 - st.lift * clamp(rvx / 1100, 0, 1) * 0.62;
     run.vy -= g * dt;
     run.x += run.vx * dt;
     run.y += run.vy * dt;
     run.dist = Math.max(run.dist, run.x - BAT_X);
-    run.wiggle += dt * (6 + sp * 0.004);
+    run.wiggle += dt * (6 + Math.hypot(run.vx, run.vy) * 0.004);
 
     // zone announcements
     if (run.zoneShown === 0 && run.x > 9000)  { run.zoneShown = 1; popup('~ Open Water ~', run.x, run.y + 90, { size: 26, color: '#dff6ff' }); }
@@ -890,9 +966,12 @@ function drawSky(pal) {
   ctx.beginPath(); ctx.arc(sunX, sunY, 74, 0, TAU); ctx.fill();
   ctx.globalAlpha = 1;
 
+  // cloud drift keyed to the day's wind — same direction and roughly
+  // proportional speed, so windy days visibly hustle the sky along
+  const cloudWindMul = 1 + wind.dir * clamp(wind.base / 260, 0, 0.85);
   ctx.fillStyle = pal.light > 0.5 ? '#ffffff' : '#7c8aa3';
   for (const c of clouds) {
-    const px = ((c.x - cam.x * 0.25 - time * c.speed) % (W + 500) + W + 500) % (W + 500) - 250;
+    const px = ((c.x - cam.x * 0.25 - time * c.speed * cloudWindMul) % (W + 500) + W + 500) % (W + 500) - 250;
     const py = H * 0.06 + (c.y * 0.5) - cam.y * 0.15;
     ctx.globalAlpha = 0.85;
     cloudBlob(px, py, c.scale);
@@ -903,6 +982,8 @@ function drawSky(pal) {
     ctx.fillStyle = '#cfd8ff'; ctx.globalAlpha = 0.18;
     ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1;
   }
+
+  drawWindStreaks(pal);
 }
 function cloudBlob(x, y, s) {
   ctx.beginPath();
@@ -911,6 +992,26 @@ function cloudBlob(x, y, s) {
   ctx.arc(x + 46 * s, y, 20 * s, 0, TAU);
   ctx.arc(x + 22 * s, y + 8 * s, 16 * s, 0, TAU);
   ctx.fill();
+}
+function drawWindStreaks(pal) {
+  const mag = Math.abs(wind.base);
+  if (mag < 10) return;
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  ctx.lineWidth = 1.6;
+  ctx.lineCap = 'round';
+  const dir = wind.dir || 1;
+  for (const s of windStreaks) {
+    if (s.shelterAmt < 0.06) continue;
+    const sx = ((s.frac + 1) / 2) * W;
+    const sy = w2sy(s.worldY);
+    ctx.globalAlpha = clamp(pal.light, 0, 1) * s.shelterAmt * 0.6;
+    ctx.beginPath();
+    ctx.moveTo(sx - s.len * dir, sy);
+    ctx.lineTo(sx, sy);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.lineCap = 'butt';
 }
 
 function drawPicado() {
@@ -931,7 +1032,8 @@ function drawPicado() {
     for (let i = 0; i < n; i++) {
       const t = i / (n - 1);
       const fx = -10 + t * (W + 20);
-      const fy = y0 + sag * 2 * t * (1 - t) * 2 + Math.sin(time * 1.6 + i + row * 3) * 2.5;
+      const flapRate = 1.6 + Math.abs(wind.base) * 0.012;
+      const fy = y0 + sag * 2 * t * (1 - t) * 2 + Math.sin(time * flapRate + i + row * 3) * 2.5;
       ctx.fillStyle = PICADO[(i + row * 3) % PICADO.length];
       ctx.beginPath();
       ctx.moveTo(fx - 15, fy);
@@ -987,8 +1089,11 @@ function drawBeach() {
   ctx.fillStyle = '#8a5a2b';
   ctx.beginPath(); ctx.arc(px - 34, py - 144, 6, 0, TAU); ctx.arc(px - 46, py - 140, 6, 0, TAU); ctx.fill();
 
-  // beach umbrella, tucked behind the luchador
+  // beach umbrella, tucked behind the luchador — flutters with the day's wind
   const ux = w2sx(64), uy = w2sy(52);
+  const flutter = clamp(wind.dir * wind.base * 0.0006, -0.12, 0.12) + Math.sin(time * 1.3) * 0.02;
+  ctx.save();
+  ctx.translate(ux, uy); ctx.rotate(flutter); ctx.translate(-ux, -uy);
   ctx.strokeStyle = '#8a5a2b'; ctx.lineWidth = 5;
   ctx.beginPath(); ctx.moveTo(ux, uy); ctx.lineTo(ux + 6, uy - 62); ctx.stroke();
   for (let i = 0; i < 5; i++) {
@@ -999,6 +1104,7 @@ function drawBeach() {
     ctx.arc(ux + 6, uy - 56, 44, a1, a2);
     ctx.closePath(); ctx.fill();
   }
+  ctx.restore();
   ctx.lineCap = 'butt';
 }
 
@@ -1514,6 +1620,10 @@ function updateHud() {
   $('efill').style.width = (run.energy / run.maxEnergy * 100) + '%';
   // chili meter only matters once the fish is airborne
   $('energy').classList.toggle('hidden', state !== 'fly' && state !== 'sink');
+  const windKmh = Math.round(Math.abs(wind.base) * 3.6 / PX_PER_M);
+  const showWind = Math.abs(wind.base) >= 25;
+  $('hudWind').classList.toggle('hidden', !showWind);
+  if (showWind) $('hudWind').textContent = (wind.dir > 0 ? '💨→ ' : '💨← ') + windKmh;
 }
 
 /* ---------- menu / shop ---------- */
@@ -1657,6 +1767,7 @@ function frame(now) {
   stepCamera(dt);
   spawnFoodAhead();
   stepBubbleColumns(dt);
+  stepWindStreaks(dt);
   stepParticles(dt);
   render();
   updateHud();
@@ -1679,6 +1790,7 @@ window.OceanSkips = {
              tossApex: TOSS_Y + 83 };
   },
   roughAt, surfaceAt,   // exposed for wave-tuning tests
+  windAt, wind, rollWind, stats, shelterTopAt,   // exposed for wind-tuning tests
   warp(x) { cam.x = x; menuWrapLimit = Math.max(4200, x + 8000); },
 };
 
