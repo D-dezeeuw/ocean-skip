@@ -3,6 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="OceanSkips">
+<meta name="theme-color" content="#0b2438">
+<link rel="manifest" href='data:application/manifest+json,{"name":"OceanSkips","short_name":"OceanSkips","display":"fullscreen","orientation":"landscape","background_color":"%230b2438","theme_color":"%230b2438"}'>
 <title>OceanSkips — Beach Fiesta 🐟🎉</title>
 <link rel="icon" href="data:,">
 <style>
@@ -339,12 +345,27 @@ if (!CanvasRenderingContext2D.prototype.roundRect) {
     return this;
   };
 }
-let W = 0, H = 0, DPR = 1;
+let W = 0, H = 0, DPR = 1, VS = 1;
 function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, 2);
-  W = window.innerWidth; H = window.innerHeight;
-  cvs.width = Math.round(W * DPR); cvs.height = Math.round(H * DPR);
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  // Size from the visual viewport (the browser's nav/tool bars shrink it on
+  // phones) and pin the canvas CSS box to the same numbers — if the buffer
+  // and the CSS box ever disagree, the browser stretches the buffer and the
+  // whole game reads as "zoomed in" with the water pushed off-screen.
+  const vv = window.visualViewport;
+  const cssW = Math.max(1, Math.round(vv ? vv.width : window.innerWidth));
+  const cssH = Math.max(1, Math.round(vv ? vv.height : window.innerHeight));
+  cvs.style.width = cssW + 'px';
+  cvs.style.height = cssH + 'px';
+  cvs.width = Math.round(cssW * DPR);
+  cvs.height = Math.round(cssH * DPR);
+  // Short landscape viewports (browser chrome eating the height) get the
+  // same scene zoomed out instead of cropped: below 480 CSS px the world is
+  // drawn smaller and the logical canvas grows, so the toss arc, luchador
+  // and water line always fit on screen together.
+  VS = clamp(cssH / 480, 0.62, 1);
+  W = cssW / VS; H = cssH / VS;
+  ctx.setTransform(DPR * VS, 0, 0, DPR * VS, 0, 0);
 }
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => {
@@ -1343,6 +1364,10 @@ window.OceanSkips = {
   get snapshot() {
     return { state, x: run.x, y: run.y, vx: run.vx, vy: run.vy,
              dist: run.dist, skips: run.skips, energy: run.energy };
+  },
+  get view() {
+    return { W, H, VS, DPR, seaLine: seaLine(), camX: cam.x, camY: cam.y,
+             tossApex: TOSS_Y + 83 };
   },
   warp(x) { cam.x = x; menuWrapLimit = Math.max(4200, x + 8000); },
 };
