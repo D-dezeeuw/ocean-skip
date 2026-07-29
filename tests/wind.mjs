@@ -1,20 +1,22 @@
 #!/usr/bin/env node
 // Pure numeric unit test of the wind model + air-relative flight drag
 // (implementation-20.md Phase C, features 13-14). Mirrors index.html's
-// windAt/shelterTopAt/roughAt formulas exactly — no browser, no rendering.
+// windAt/shelterTopAt formulas exactly — no browser, no rendering.
+//
+// roughAt() here is a simplified stand-in for the real 10-level wave system
+// (tests/waves.mjs covers that in detail) — just a monotonic 0.65->2.8 ramp
+// over one "cycle" of distance, which is all windAt's distBoost needs to
+// exercise its own clamping/scaling logic correctly.
 //
 // Run: node tests/wind.mjs
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 const lerp = (a, b, t) => a + (b - a) * t;
-const G = 1500, ROUGH_DIST = 6500, ROUGH_MAX = 3.4, CALM_START = 0.6, CALM_DIST = 2200;
+const G = 1500, REF_MAX_ROUGH = 2.8, PX_PER_CYCLE = 100000;
 const WIND_WAVE_AMP = 22, WIND_RAMP = 220;
 
 function roughAt(x) {
-  const u = Math.max(0, x) / ROUGH_DIST;
-  const base = 1 + (ROUGH_MAX - 1) * (u / (u + 2));
-  const t = clamp(x / CALM_DIST, 0, 1);
-  const ease = CALM_START + (1 - CALM_START) * t * t * (3 - 2 * t);
-  return base * ease;
+  const withinCycle = Math.max(0, x) % PX_PER_CYCLE;
+  return lerp(0.65, REF_MAX_ROUGH, withinCycle / PX_PER_CYCLE);
 }
 function smoothstep(e0, e1, y) { const t = clamp((y - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); }
 function shelterTopAt(x) { return roughAt(x) * WIND_WAVE_AMP; }
@@ -26,7 +28,7 @@ function gustAt(x, t, wind, comps) {
 function windAt(x, y, t, wind, comps) {
   const top = shelterTopAt(x);
   const shelter = smoothstep(top, top + WIND_RAMP, y);
-  const distBoost = lerp(1, 1.3, clamp((roughAt(x) - 1) / (ROUGH_MAX - 1), 0, 1));
+  const distBoost = lerp(1, 1.3, clamp((roughAt(x) - 1) / (REF_MAX_ROUGH - 1), 0, 1));
   return wind.base * distBoost * wind.dir * shelter * gustAt(x, t, wind, comps);
 }
 

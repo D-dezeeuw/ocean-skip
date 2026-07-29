@@ -251,8 +251,6 @@ const TOSS_Y = 112;             // hand height above calm water
 const TOSS_VY = 500;            // toss speed → apex ≈ TOSS_Y + 83 (fits short screens)
 const SWEET_Y = TOSS_Y + 55;    // centre of the sweet-spot ring, on the way down
 const SWEET_WIN = 80;           // contact quality window (px)
-const ROUGH_DIST = 6500;        // px per notch of extra sea roughness
-const ROUGH_MAX = 3.4;          // wave amplitude multiplier far out
 const OPEN_OCEAN = 22000;       // px where it's fully "deep dark ocean"
 const ENERGY_FOOD = 25;         // energy per golden sphere
 const BOOST_ACC = 660;          // px/s² while holding
@@ -315,7 +313,14 @@ function audio() {
   if (actx && actx.state === 'suspended') actx.resume();
   return actx;
 }
+// records every synth call's computed parameters (not gated on mute/audio
+// availability) purely so headless tests can verify the intended
+// velocity/angle relationships without needing to actually hear anything —
+// see window.OceanSkips.audioLog.
+let audioLog = [];
+function logAudio(entry) { audioLog.push(entry); if (audioLog.length > 200) audioLog.shift(); }
 function tone(freq, dur, { type = 'sine', vol = 0.2, slide = 0, delay = 0 } = {}) {
+  logAudio({ fn: 'tone', freq, dur, type, vol, slide, delay });
   const ac = audio(); if (!ac || save.muted) return;
   const t0 = ac.currentTime + delay;
   const o = ac.createOscillator(), g = ac.createGain();
@@ -326,16 +331,61 @@ function tone(freq, dur, { type = 'sine', vol = 0.2, slide = 0, delay = 0 } = {}
   o.connect(g).connect(ac.destination);
   o.start(t0); o.stop(t0 + dur + 0.02);
 }
+// shared 1s noise buffer, reused (at a random start offset per call) for
+// every filtered-noise burst so water sounds have real broadband texture
+// instead of being pure oscillator tones — one buffer, never rebuilt.
+let sharedNoiseBuf = null;
+function noiseBurst(freq, dur, { vol = 0.2, q = 1.1, freqSlide = 0, filterType = 'bandpass', delay = 0 } = {}) {
+  logAudio({ fn: 'noiseBurst', freq, dur, vol, q, freqSlide, filterType, delay });
+  const ac = audio(); if (!ac || save.muted) return;
+  if (!sharedNoiseBuf || sharedNoiseBuf.ac !== ac) {
+    const buf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate); // 1s of white noise
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    sharedNoiseBuf = { ac, buf };
+  }
+  const t0 = ac.currentTime + delay;
+  const offset = Math.random() * (1 - dur - 0.02);
+  const src = ac.createBufferSource();
+  src.buffer = sharedNoiseBuf.buf;
+  const filter = ac.createBiquadFilter();
+  filter.type = filterType; filter.Q.value = q;
+  filter.frequency.setValueAtTime(freq, t0);
+  if (freqSlide) filter.frequency.exponentialRampToValueAtTime(Math.max(60, freq + freqSlide), t0 + dur);
+  const gain = ac.createGain();
+  gain.gain.setValueAtTime(vol, t0);
+  gain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+  src.connect(filter).connect(gain).connect(ac.destination);
+  src.start(t0, offset, dur);
+}
 const sfx = {
   toss:    () => tone(300, 0.18, { type: 'triangle', vol: 0.16, slide: 260 }),
   crack: (q) => { tone(150, 0.1, { type: 'square', vol: 0.25, slide: -60 });
                   tone(500 + q * 500, 0.16, { type: 'triangle', vol: 0.2, slide: 300 }); },
   perfect: () => [660, 880, 1320].forEach((f, i) => tone(f, 0.12, { type: 'square', vol: 0.1, delay: i * 0.07 })),
   whiff:   () => tone(240, 0.3, { type: 'sawtooth', vol: 0.1, slide: -140 }),
-  skip: (sp) => { const f = 280 + clamp(sp, 0, 2200) * 0.25; tone(f, 0.12, { type: 'triangle', vol: 0.22, slide: -f * 0.4 }); },
+  // steep (0 = grazing/horizontal, 1 = dead-on/vertical) picks the sound
+  // between a light high "splish" and a round low "splosh"; sp (impact
+  // speed) still adds brightness/volume on top of that, same as before.
+  // A tonal ping gives the pitch identity; a filtered noise burst underneath
+  // gives it real watery texture instead of a pure oscillator beep.
+  skip: (sp, steep = 0.5) => {
+    const spd = clamp(sp, 0, 2200), st = clamp(steep, 0, 1);
+    const baseFreq = lerp(760, 220, st) + spd * 0.08;
+    const dur = lerp(0.07, 0.2, st);
+    const vol = lerp(0.15, 0.24, st) * clamp(0.5 + spd / 2200 * 0.6, 0.5, 1.1);
+    tone(baseFreq, dur, { type: st > 0.5 ? 'sine' : 'triangle', vol, slide: -baseFreq * (0.5 + st * 0.3) });
+    noiseBurst(lerp(2400, 700, st), dur * 0.9, { vol: vol * 0.75, q: 1.1 + st, freqSlide: -lerp(1200, 400, st) });
+  },
   boost:   () => tone(120, 0.09, { type: 'sawtooth', vol: 0.06, slide: 60 }),
   collect: () => { tone(880, 0.09, { type: 'square', vol: 0.10 }); tone(1320, 0.14, { type: 'square', vol: 0.10, delay: 0.07 }); },
-  sink:    () => tone(320, 0.7, { type: 'triangle', vol: 0.2, slide: -240 }),
+  // low-speed sink ending: a soft descending double-blip, like a bubble
+  // glugging up, plus a short noise "glug" underneath for texture
+  blub:    () => {
+    tone(300, 0.22, { type: 'sine', vol: 0.2, slide: -170 });
+    tone(210, 0.18, { type: 'sine', vol: 0.13, slide: -110, delay: 0.16 });
+    noiseBurst(500, 0.12, { vol: 0.08, freqSlide: -260, delay: 0.02 });
+  },
   // little mariachi-ish fanfare
   best:    () => [523, 659, 784, 659, 784, 1047].forEach((f, i) => tone(f, 0.14, { type: 'square', vol: 0.11, delay: i * 0.09 })),
   click:   () => tone(600, 0.06, { type: 'square', vol: 0.08 }),
@@ -344,8 +394,10 @@ const sfx = {
   gust:    () => tone(220, 0.35, { type: 'sawtooth', vol: 0.14, slide: 90 }),
 };
 
-/* ---------- wind whoosh: continuous filtered noise, gain tracks
-   air-relative speed x altitude, so riding high wind sounds fast ---------- */
+/* ---------- wind whoosh: continuous filtered noise, gain AND pitch track
+   air-relative speed x altitude — fast/high reads as a bright, loud rush;
+   slow/low fades toward near-silent and dull rather than just quieter
+   ---------- */
 let windNoise = null;
 function updateWindAudio(rsp, y) {
   if (save.muted || !actx) { if (windNoise) windNoise.gain.gain.value = 0; return; }
@@ -364,11 +416,14 @@ function updateWindAudio(rsp, y) {
     src.start();
     windNoise = { src, filter, gain };
   }
-  const altFactor = clamp(y / 350, 0.15, 1);
-  const g = clamp(rsp / 1400, 0, 1) * altFactor * 0.1;
+  const speedFrac = clamp(rsp / 1400, 0, 1);
+  const altFactor = clamp(y / 350, 0.06, 1);   // low floor: near the water reads near-silent
+  const g = Math.pow(speedFrac, 1.3) * altFactor * 0.13;
+  const freq = lerp(110, 780, Math.pow(speedFrac, 0.85)); // low/muffled when slow, brighter when fast
+  logAudio({ fn: 'wind', rsp, y, gain: g, freq });
   const t0 = actx.currentTime;
   windNoise.gain.gain.setTargetAtTime(g, t0, 0.1);
-  windNoise.filter.frequency.setTargetAtTime(260 + rsp * 0.28, t0, 0.15);
+  windNoise.filter.frequency.setTargetAtTime(freq, t0, 0.15);
 }
 function silenceWindAudio() {
   if (windNoise && actx) windNoise.gain.gain.setTargetAtTime(0, actx.currentTime, 0.15);
@@ -421,25 +476,57 @@ window.addEventListener('orientationchange', () => {
 if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
 resize();
 
-/* ---------- water: stacked sines, rougher with distance ---------- */
-let waveComps = [];
-function rollWaves() {
-  waveComps = [
-    { a: 7,  l: 330,  s: 62,  p: rand(0, TAU) },
-    { a: 4,  l: 170,  s: -44, p: rand(0, TAU) },
-    { a: 3,  l: 88,   s: 96,  p: rand(0, TAU) },
-    { a: 16, l: 1500, s: 34,  p: rand(0, TAU) },  // slow ocean swell
-    // chop: cusped crests, broad troughs (q < 1 sharpens the peak)
-    { a: 9,  l: 260,  s: 50,  p: rand(0, TAU), q: 0.55 },
-    { a: 4,  l: 130,  s: -70, p: rand(0, TAU), q: 0.65 },
-  ].map(c => ({ ...c, k: TAU / c.l }));
-  for (const c of waveComps) {
-    if (!c.q) continue;
-    let m = 0;                 // remove the peaked profile's DC offset
-    for (let i = 0; i < 64; i++) m += peakProfile((i / 64) * TAU, c.q).y;
-    c.off = m / 64;
-  }
-}
+/* ---------- water: 10 hand-designed levels, 250m each, repeating in
+   cycles with +10% amplitude every cycle. Replaces the old single
+   continuous distance-based roughness ramp, which smoothly graded from
+   calm to rough with no distinct stages — this makes each 250m stretch a
+   readable, distinct "level" (sine → concave, slow → fast, sparse →
+   layered), difficulty climbing within a cycle and again across cycles. */
+const METERS_PER_LEVEL = 250;
+const PX_PER_LEVEL = METERS_PER_LEVEL * PX_PER_M;      // 10,000 px
+const LEVELS_PER_CYCLE = 10;
+const PX_PER_CYCLE = PX_PER_LEVEL * LEVELS_PER_CYCLE;  // 100,000 px
+const CYCLE_GROWTH = 0.10;       // +10% wave amplitude every full cycle
+const LEVEL_BLEND_PX = 1400;     // ~35m crossfade so levels don't pop underfoot
+
+// Each level is a short recipe of components: a = amplitude in px (before
+// cycle scaling), l = wavelength (px), s = speed (px/s, sign = travel
+// direction), q = concave-crest sharpness (omitted = plain sine, matching
+// the old wave shape). `rough` is a hand-tuned difficulty scalar consumed
+// by the skim-speed penalty and the wind-strength ramp — kept independent
+// of amplitude since wavelength and concavity shift the felt difficulty too.
+const WAVE_LEVELS = [
+  { name: 'Easy swell',      rough: 0.65, comps: [
+    { a: 6,  l: 420, s: 26 } ] },
+  { name: 'Big swell',       rough: 0.95, comps: [
+    { a: 15, l: 380, s: 34 } ] },
+  { name: 'Gentle chop',     rough: 1.05, comps: [
+    { a: 9,  l: 260, s: 42, q: 0.6 } ] },
+  { name: 'Sharp chop',      rough: 1.35, comps: [
+    { a: 18, l: 230, s: 48, q: 0.5 } ] },
+  { name: 'Chop over swell', rough: 1.55, comps: [
+    { a: 11, l: 520, s: 22 },
+    { a: 13, l: 220, s: 50, q: 0.55 } ] },
+  { name: 'Fast ripple',     rough: 1.70, comps: [
+    { a: 9,  l: 150, s: 66 },
+    { a: 12, l: 900, s: 24, q: 0.5 } ] },  // long q wavelength = concave spikes only occasionally
+  { name: 'Ripple + chop',   rough: 1.90, comps: [
+    { a: 10, l: 150, s: 70 },
+    { a: 14, l: 420, s: 34, q: 0.5 } ] },
+  { name: 'Rough mix',       rough: 2.15, comps: [
+    { a: 12, l: 130, s: 78 },
+    { a: 17, l: 260, s: 52, q: 0.45 } ] },
+  { name: 'Heavy chaos',     rough: 2.45, comps: [
+    { a: 10, l: 110, s: 86 },
+    { a: 16, l: 210, s: 60, q: 0.45 },
+    { a: 9,  l: 480, s: 30 } ] },
+  { name: 'Maelstrom',       rough: 2.80, comps: [
+    { a: 12, l: 95,  s: 95 },
+    { a: 20, l: 190, s: 66, q: 0.4 },
+    { a: 11, l: 430, s: 32 } ] },
+];
+const REF_MAX_ROUGH = WAVE_LEVELS[WAVE_LEVELS.length - 1].rough;
+
 // unit-amplitude wave with a sharp concave crest: y = 1 − 2·|sin(θ/2)|^q
 function peakProfile(th, q) {
   const s = Math.sin(th / 2);
@@ -448,37 +535,91 @@ function peakProfile(th, q) {
   return { y: 1 - 2 * Math.pow(u, q),
            d: -q * Math.pow(ue, q - 1) * Math.sign(s) * Math.cos(th / 2) };
 }
-rollWaves();
-const CALM_START = 0.6;    // amplitude fraction right at the beach
-const CALM_DIST = 2200;    // px over which the sea eases up to full chop
-function roughAt(x) {
-  // saturating ramp: calm-ish at the beach → approaches ROUGH_MAX far out,
-  // with an extra ease-in over the first stretch so the very start reads
-  // noticeably calmer instead of already at full chop from x = 0.
-  const u = Math.max(0, x) / ROUGH_DIST;
-  const base = 1 + (ROUGH_MAX - 1) * (u / (u + 2));
-  const t = clamp(x / CALM_DIST, 0, 1);
-  const ease = CALM_START + (1 - CALM_START) * t * t * (3 - 2 * t); // smoothstep
-  return base * ease;
+// each concave component's DC offset depends only on q, so it's memoized
+// once per distinct q rather than recomputed every call
+const peakOffsetCache = new Map();
+function peakOffset(q) {
+  let off = peakOffsetCache.get(q);
+  if (off === undefined) {
+    let m = 0;
+    for (let i = 0; i < 64; i++) m += peakProfile((i / 64) * TAU, q).y;
+    off = m / 64;
+    peakOffsetCache.set(q, off);
+  }
+  return off;
 }
-function surfaceAt(x, t) {
-  const r = roughAt(x);
+
+let levelPhaseSeed = 0; // rolled per run so repeats don't feel identical
+function rollWaves() { levelPhaseSeed = rand(0, 1000); }
+rollWaves();
+// deterministic per-(level,component) phase, stable for the whole run via
+// levelPhaseSeed, so a level's components don't resync every attempt
+function levelCompPhase(levelIdx, compIdx) {
+  return hash01(levelIdx * 17.3 + compIdx * 5.7 + levelPhaseSeed) * TAU;
+}
+
+function levelInfoAt(x) {
+  const px = Math.max(0, x);
+  const cycle = Math.floor(px / PX_PER_CYCLE);
+  const withinCycle = px - cycle * PX_PER_CYCLE;
+  const levelIdx = Math.min(LEVELS_PER_CYCLE - 1, Math.floor(withinCycle / PX_PER_LEVEL));
+  const posInLevel = withinCycle - levelIdx * PX_PER_LEVEL;
+  return { cycle, levelIdx, posInLevel, mult: 1 + CYCLE_GROWTH * cycle };
+}
+// blend weight + adjacent level info near a level/cycle boundary, shared by
+// roughAt (just needs the scalar) and surfaceAt (needs the full wave sum)
+function levelBlendAt(x) {
+  const info = levelInfoAt(x);
+  const distToBoundary = PX_PER_LEVEL - info.posInLevel;
+  let w = 0, nextIdx = info.levelIdx, nextMult = info.mult;
+  if (distToBoundary < LEVEL_BLEND_PX) {
+    const t2 = 1 - distToBoundary / LEVEL_BLEND_PX;
+    w = t2 * t2 * (3 - 2 * t2); // smoothstep
+    nextIdx = info.levelIdx + 1;
+    let nextCycle = info.cycle;
+    if (nextIdx >= LEVELS_PER_CYCLE) { nextIdx = 0; nextCycle += 1; }
+    nextMult = 1 + CYCLE_GROWTH * nextCycle;
+  }
+  return { levelIdx: info.levelIdx, mult: info.mult, nextIdx, nextMult, w };
+}
+function roughAt(x) {
+  const b = levelBlendAt(x);
+  const cur = WAVE_LEVELS[b.levelIdx].rough * b.mult;
+  if (b.w <= 0) return cur;
+  return lerp(cur, WAVE_LEVELS[b.nextIdx].rough * b.nextMult, b.w);
+}
+function evalLevel(levelIdx, mult, x, t) {
+  const level = WAVE_LEVELS[levelIdx];
   let y = 0, slope = 0, vy = 0;
-  for (const c of waveComps) {
-    const ph = c.k * x + (c.s * c.k) * t + c.p;
-    const A = c.a * r;
+  for (let i = 0; i < level.comps.length; i++) {
+    const c = level.comps[i];
+    const k = TAU / c.l;
+    const ph = k * x + c.s * k * t + levelCompPhase(levelIdx, i);
+    const A = c.a * mult;
     if (c.q) {
       const pk = peakProfile(ph, c.q);
-      y += A * (pk.y - c.off);
-      slope += A * pk.d * c.k;
-      vy += A * pk.d * (c.s * c.k);
+      y += A * (pk.y - peakOffset(c.q));
+      slope += A * pk.d * k;
+      vy += A * pk.d * (c.s * k);
     } else {
       y += A * Math.sin(ph);
-      slope += A * c.k * Math.cos(ph);
-      vy += A * (c.s * c.k) * Math.cos(ph);
+      slope += A * k * Math.cos(ph);
+      vy += A * (c.s * k) * Math.cos(ph);
     }
   }
-  return { y, slope, vy, rough: r };
+  return { y, slope, vy };
+}
+function surfaceAt(x, t) {
+  const b = levelBlendAt(x);
+  const cur = evalLevel(b.levelIdx, b.mult, x, t);
+  const curRough = WAVE_LEVELS[b.levelIdx].rough * b.mult;
+  if (b.w <= 0) return { ...cur, rough: curRough };
+  const nxt = evalLevel(b.nextIdx, b.nextMult, x, t);
+  const nxtRough = WAVE_LEVELS[b.nextIdx].rough * b.nextMult;
+  return {
+    y: lerp(cur.y, nxt.y, b.w), slope: lerp(cur.slope, nxt.slope, b.w),
+    vy: lerp(cur.vy, nxt.vy, b.w), rough: lerp(curRough, nxtRough, b.w),
+  };
 }
 
 /* ---------- wind: boundary-layer shear, sheltered near the waves,
@@ -525,8 +666,8 @@ function gustAt(x, t) {
 function windAt(x, y, t) {
   const top = shelterTopAt(x);
   const shelter = smoothstep(top, top + WIND_RAMP, y);
-  // it blows a little harder out in the open ocean, same ramp shape as roughAt
-  const distBoost = lerp(1, 1.3, clamp((roughAt(x) - 1) / (ROUGH_MAX - 1), 0, 1));
+  // it blows a little harder as the waves get rougher, same signal roughAt uses
+  const distBoost = lerp(1, 1.3, clamp((roughAt(x) - 1) / (REF_MAX_ROUGH - 1), 0, 1));
   // a triggered gust front spikes wind strength for a few seconds
   const gustFrontBoost = 1 + clamp(gustBoostT / 2.5, 0, 1) * 0.6;
   return wind.base * distBoost * gustFrontBoost * wind.dir * shelter * gustAt(x, t);
@@ -903,7 +1044,7 @@ function flop(msg) {
 function beginSink() {
   state = 'sink';
   run.sinkT = 0;
-  sfx.sink();
+  sfx.blub();
   silenceWindAudio();
   splash(run.x, surfaceAt(run.x, time).y, 260);
 }
@@ -1070,7 +1211,7 @@ function stepPhysics(dt) {
             splash(run.x, s.y, speed * (0.4 + steep));
             for (let k = 0; k < 4; k++) spawnBubble(run.x + rand(-10, 10), s.y - rand(4, 20), { life: 0.6, minSize: 1.5, maxSize: 3 });
             foamPatches.push({ x: run.x, born: time, size: rand(16, 26) });
-            sfx.skip(newSp);
+            sfx.skip(newSp, steep);
             if (run.skips === 10) popup('¡Órale! 🎉', run.x, run.y + 70, { size: 24, color: '#ffd93b' });
           }
         }
@@ -1998,7 +2139,8 @@ window.OceanSkips = {
     return { W, H, VS, DPR, seaLine: seaLine(), camX: cam.x, camY: cam.y,
              tossApex: TOSS_Y + 83 };
   },
-  roughAt, surfaceAt,   // exposed for wave-tuning tests
+  roughAt, surfaceAt, levelInfoAt,   // exposed for wave-tuning tests
+  WAVE_LEVELS, PX_PER_LEVEL, LEVELS_PER_CYCLE, PX_PER_CYCLE, CYCLE_GROWTH, LEVEL_BLEND_PX,
   windAt, wind, rollWind, stats, shelterTopAt,   // exposed for wind-tuning tests
   get windStreaks() { return windStreaks.map(s => ({ ...s })); },   // debug only
   get flightEvents() {
@@ -2007,6 +2149,9 @@ window.OceanSkips = {
   get bigAirCount() { return bigAirCount; },
   get particleCount() { return particles.length; },
   quality, updateQualityScaler, PARTICLE_CAP, REDUCED_MOTION, windLabel,   // exposed for perf/meta tests
+  get audioLog() { return audioLog.slice(); },
+  clearAudioLog() { audioLog = []; },
+  sfx, updateWindAudio,   // exposed for audio-tuning tests
   selectFish(id) { const f = FISH.find(x => x.id === id); if (f) { fishDef = f; save.fish = f.id; } },
   warp(x) { cam.x = x; menuWrapLimit = Math.max(4200, x + 8000); },
 };
