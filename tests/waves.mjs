@@ -74,7 +74,52 @@ function levelBlendAt(x) {
   }
   return { levelIdx: info.levelIdx, mult: info.mult, nextIdx, nextMult, w };
 }
+
+// intro ramp: the first 1000m is one continuous, slowly-evolving swell
+// (long/flat sine -> level 3's "Sharp chop") instead of 4 discrete blocks —
+// only ever reached once, at the true start of a run.
+const INTRO_PX = 1000 * PX_PER_M;
+const INTRO_START = { a: 5, l: 1900, s: 16 };
+const INTRO_TARGET = WAVE_LEVELS[3].comps[0];
+const INTRO_START_ROUGH = 0.5;
+const INTRO_TARGET_ROUGH = WAVE_LEVELS[3].rough;
+const INTRO_CONCAVE_START = 0.4;
+function smoothstep(e0, e1, y) { const t = clamp((y - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); }
+function introParamsAt(x) {
+  const w = smoothstep(0, INTRO_PX, x);
+  return {
+    w,
+    a: lerp(INTRO_START.a, INTRO_TARGET.a, w),
+    l: lerp(INTRO_START.l, INTRO_TARGET.l, w),
+    s: lerp(INTRO_START.s, INTRO_TARGET.s, w),
+    rough: lerp(INTRO_START_ROUGH, INTRO_TARGET_ROUGH, w),
+    concaveMix: clamp((w - INTRO_CONCAVE_START) / (1 - INTRO_CONCAVE_START), 0, 1),
+  };
+}
+function introRamp(x, t) {
+  const p = introParamsAt(x);
+  const k = TAU / p.l;
+  const ph = k * x + p.s * k * t + levelCompPhase(-1, 0);
+  const sy = p.a * Math.sin(ph), sslope = p.a * k * Math.cos(ph), svy = p.a * (p.s * k) * Math.cos(ph);
+  let y = sy, slope = sslope, vy = svy;
+  if (p.concaveMix > 0) {
+    const q = INTRO_TARGET.q;
+    const pk = peakProfile(ph, q);
+    const cy = p.a * (pk.y - peakOffset(q)), cslope = p.a * pk.d * k, cvy = p.a * pk.d * (p.s * k);
+    y = lerp(sy, cy, p.concaveMix);
+    slope = lerp(sslope, cslope, p.concaveMix);
+    vy = lerp(svy, cvy, p.concaveMix);
+  }
+  return { y, slope, vy, rough: p.rough };
+}
+
 function roughAt(x) {
+  if (x < INTRO_PX) {
+    const introRough = introParamsAt(x).rough;
+    if (x < INTRO_PX - LEVEL_BLEND_PX) return introRough;
+    const w2 = smoothstep(INTRO_PX - LEVEL_BLEND_PX, INTRO_PX, x);
+    return lerp(introRough, WAVE_LEVELS[4].rough, w2);
+  }
   const b = levelBlendAt(x);
   const cur = WAVE_LEVELS[b.levelIdx].rough * b.mult;
   if (b.w <= 0) return cur;
@@ -102,6 +147,16 @@ function evalLevel(levelIdx, mult, x, t) {
   return { y, slope, vy };
 }
 function surfaceAt(x, t) {
+  if (x < INTRO_PX) {
+    const intro = introRamp(x, t);
+    if (x < INTRO_PX - LEVEL_BLEND_PX) return intro;
+    const w2 = smoothstep(INTRO_PX - LEVEL_BLEND_PX, INTRO_PX, x);
+    const nxt = evalLevel(4, 1, x, t);
+    return {
+      y: lerp(intro.y, nxt.y, w2), slope: lerp(intro.slope, nxt.slope, w2),
+      vy: lerp(intro.vy, nxt.vy, w2), rough: lerp(intro.rough, WAVE_LEVELS[4].rough, w2),
+    };
+  }
   const b = levelBlendAt(x);
   const cur = evalLevel(b.levelIdx, b.mult, x, t);
   const curRough = WAVE_LEVELS[b.levelIdx].rough * b.mult;
@@ -141,17 +196,23 @@ for (let i = 1; i < 10; i++) {
     `${WAVE_LEVELS[i].rough} vs ${WAVE_LEVELS[i - 1].rough}`);
 }
 
-// 4) Cycle scaling: level 0 in cycle 1 is exactly 10% stronger than cycle 0;
-// cycle 2 is 20% stronger — "every cycle adding 10%".
-const r0c0 = roughAt(mid(0));
+// 4) Cycle scaling: growth is linear off the cycle-0 baseline, +10% per
+// cycle — cycle 1 is baseline*1.10, cycle 2 is baseline*1.20, cycle 3 is
+// baseline*1.30. (Checked directly against the level-0 rough constant
+// rather than cycle 0's roughAt(), since cycle 0's "level 0" territory is
+// now the intro ramp — see section 9 below for that.)
 const r0c1 = roughAt(PX_PER_CYCLE + mid(0));
 const r0c2 = roughAt(2 * PX_PER_CYCLE + mid(0));
-check('cycle 1 rough is +10% over cycle 0', Math.abs(r0c1 / r0c0 - 1.10) < 1e-9, `ratio=${(r0c1 / r0c0).toFixed(4)}`);
-check('cycle 2 rough is +20% over cycle 0', Math.abs(r0c2 / r0c0 - 1.20) < 1e-9, `ratio=${(r0c2 / r0c0).toFixed(4)}`);
+const r0c3 = roughAt(3 * PX_PER_CYCLE + mid(0));
+check('cycle 1 rough is baseline +10%', Math.abs(r0c1 - WAVE_LEVELS[0].rough * 1.10) < 1e-9, `${r0c1}`);
+check('cycle 2 rough is baseline +20%', Math.abs(r0c2 - WAVE_LEVELS[0].rough * 1.20) < 1e-9, `${r0c2}`);
+check('cycle 3 rough is baseline +30%', Math.abs(r0c3 - WAVE_LEVELS[0].rough * 1.30) < 1e-9, `${r0c3}`);
 
-// 5) Amplitude scales the same way as rough: level 0's wave amplitude in
-// cycle 1 should be ~10% bigger than in cycle 0 (sampled as peak-to-peak
-// height over one wavelength, away from any blend zone).
+// 5) Amplitude scales the same way as rough: level 0's wave amplitude tracks
+// the linear per-cycle multiplier exactly (sampled as peak-to-peak height
+// over one wavelength, away from any blend zone) — cycle 2 vs cycle 1 is
+// mult(2)/mult(1) = 1.20/1.10, not a flat 10% (that flat ratio only holds
+// between cycle 0 and cycle 1, since growth is linear off cycle 0's baseline).
 function amplitudeAt(levelStartX) {
   let mn = Infinity, mx = -Infinity;
   for (let dx = 0; dx < 400; dx += 4) {
@@ -160,26 +221,35 @@ function amplitudeAt(levelStartX) {
   }
   return mx - mn;
 }
-const ampC0 = amplitudeAt(mid(0)), ampC1 = amplitudeAt(PX_PER_CYCLE + mid(0));
-check('level-0 wave amplitude is ~10% bigger one cycle later',
-  Math.abs(ampC1 / ampC0 - 1.10) < 0.01, `ratio=${(ampC1 / ampC0).toFixed(4)}`);
+const ampC1 = amplitudeAt(PX_PER_CYCLE + mid(0)), ampC2 = amplitudeAt(2 * PX_PER_CYCLE + mid(0));
+const expectedAmpRatio = (1 + CYCLE_GROWTH * 2) / (1 + CYCLE_GROWTH * 1);
+check('level-0 wave amplitude matches the linear cycle-growth multiplier',
+  Math.abs(ampC2 / ampC1 - expectedAmpRatio) < 0.001,
+  `ratio=${(ampC2 / ampC1).toFixed(4)} expected=${expectedAmpRatio.toFixed(4)}`);
 
 // 6) Smooth blending: surfaceAt must not jump discontinuously across a level
-// boundary — step across it in small increments and check no single step's
-// height change is wildly larger than its neighbors (which would mean a
-// hard pop rather than a crossfade).
-{
-  const boundaryX = PX_PER_LEVEL; // level 0 -> level 1
-  const step = 20;
-  let maxStepDelta = 0, prevY = null;
-  for (let x = boundaryX - LEVEL_BLEND_PX - 200; x <= boundaryX + 200; x += step) {
+// boundary — step across it in small increments and compare the worst-case
+// step there against a same-width control window sampled well clear of any
+// boundary (i.e. the level's own inherent wave steepness). A hard pop would
+// stand out far above that baseline; a crossfade stays in the same ballpark
+// (levels vary in wavelength/amplitude, so a fixed magnitude threshold isn't
+// portable across boundaries — this is boundary-agnostic).
+function maxStepDeltaOver(x0, x1, step = 20) {
+  let maxDelta = 0, prevY = null;
+  for (let x = x0; x <= x1; x += step) {
     const y = surfaceAt(x, 0).y;
-    if (prevY !== null) maxStepDelta = Math.max(maxStepDelta, Math.abs(y - prevY));
+    if (prevY !== null) maxDelta = Math.max(maxDelta, Math.abs(y - prevY));
     prevY = y;
   }
-  // component amplitudes here are ~6-18px; a single 20px step should never
-  // swing height by anywhere near a full amplitude if the blend is smooth
-  check('no hard pop crossing a level boundary', maxStepDelta < 12, `maxStepDelta=${maxStepDelta.toFixed(2)}`);
+  return maxDelta;
+}
+{
+  const boundaryX = 6 * PX_PER_LEVEL; // level 5 -> level 6
+  const windowHalf = LEVEL_BLEND_PX / 2 + 200;
+  const boundaryDelta = maxStepDeltaOver(boundaryX - windowHalf, boundaryX + windowHalf);
+  const controlDelta = maxStepDeltaOver(boundaryX - PX_PER_LEVEL / 2 - windowHalf, boundaryX - PX_PER_LEVEL / 2 + windowHalf);
+  check('no hard pop crossing a level boundary', boundaryDelta < controlDelta * 3,
+    `boundary=${boundaryDelta.toFixed(2)} control=${controlDelta.toFixed(2)}`);
 }
 
 // 7) Concave levels actually produce sharper crests than sine-only levels —
@@ -206,6 +276,70 @@ const sineSharpness = peakSharpness(null, null);
 const concaveSharpness = peakSharpness(null, 0.5);
 check('concave (q) crests are measurably sharper than plain sine crests',
   concaveSharpness < sineSharpness * 0.6, `sine=${sineSharpness.toFixed(3)} concave=${concaveSharpness.toFixed(3)}`);
+
+// 9) Intro ramp: the very start of a run should read as a long, barely-
+// curved sine that only gradually shortens/steepens/gains a concave crest
+// over the first 1000m — one continuous transformation, not 4 discrete
+// 250m blocks — and hand off cleanly into the ordinary level system.
+check('intro starts as a long "two screens" wavelength', introParamsAt(0).l > 1800, `${introParamsAt(0).l}`);
+check('intro starts with tiny amplitude', introParamsAt(0).a < 6, `${introParamsAt(0).a}`);
+check('intro starts calmer than level 0', introParamsAt(0).rough < WAVE_LEVELS[0].rough, `${introParamsAt(0).rough}`);
+check('intro starts as a pure sine (no concave mix yet)', introParamsAt(0).concaveMix === 0, `${introParamsAt(0).concaveMix}`);
+check('intro settles onto level 3\'s wavelength by the end',
+  Math.abs(introParamsAt(INTRO_PX).l - WAVE_LEVELS[3].comps[0].l) < 1e-6, `${introParamsAt(INTRO_PX).l}`);
+check('intro settles onto level 3\'s rough by the end',
+  Math.abs(introParamsAt(INTRO_PX).rough - WAVE_LEVELS[3].rough) < 1e-6, `${introParamsAt(INTRO_PX).rough}`);
+check('intro is fully concave by the end', introParamsAt(INTRO_PX).concaveMix === 1, `${introParamsAt(INTRO_PX).concaveMix}`);
+
+// concave crest stays off through the first ~40% of the ramp, then fades in
+check('concave mix is still zero a fifth of the way in', introParamsAt(INTRO_PX * 0.2).concaveMix === 0,
+  `${introParamsAt(INTRO_PX * 0.2).concaveMix}`);
+check('concave mix has faded in by 80% of the way in', introParamsAt(INTRO_PX * 0.8).concaveMix > 0,
+  `${introParamsAt(INTRO_PX * 0.8).concaveMix}`);
+
+// wavelength/amplitude/rough all move smoothly across the ramp — no discrete
+// per-250m jumps like the old 4-level-block layout would have produced.
+{
+  const N = 20;
+  const samples = [];
+  for (let i = 0; i <= N; i++) samples.push(introParamsAt((i / N) * INTRO_PX));
+  let maxWavelenStep = 0, maxAmpStep = 0;
+  for (let i = 1; i < samples.length; i++) {
+    maxWavelenStep = Math.max(maxWavelenStep, Math.abs(samples[i].l - samples[i - 1].l));
+    maxAmpStep = Math.max(maxAmpStep, Math.abs(samples[i].a - samples[i - 1].a));
+    check(`intro wavelength is non-increasing at sample ${i}`, samples[i].l <= samples[i - 1].l + 1e-9,
+      `${samples[i - 1].l} -> ${samples[i].l}`);
+    check(`intro amplitude is non-decreasing at sample ${i}`, samples[i].a >= samples[i - 1].a - 1e-9,
+      `${samples[i - 1].a} -> ${samples[i].a}`);
+  }
+  // total wavelength/amplitude swing spread evenly over 20 steps — no single
+  // step should account for anywhere near the whole swing (that'd mean a
+  // block jump survived instead of a continuous ease)
+  const totalWavelenSwing = samples[0].l - samples[samples.length - 1].l;
+  const totalAmpSwing = samples[samples.length - 1].a - samples[0].a;
+  check('no single step dominates the wavelength ramp', maxWavelenStep < totalWavelenSwing * 0.25,
+    `maxStep=${maxWavelenStep.toFixed(1)} totalSwing=${totalWavelenSwing.toFixed(1)}`);
+  check('no single step dominates the amplitude ramp', maxAmpStep < totalAmpSwing * 0.25,
+    `maxStep=${maxAmpStep.toFixed(1)} totalSwing=${totalAmpSwing.toFixed(1)}`);
+}
+
+// no hard pop at the intro -> discrete-level-system handoff (x = INTRO_PX),
+// judged the same boundary-agnostic way as section 6: compare against a
+// control window sampled from level 4's own inherent step size just after
+// the handoff, not a fixed magnitude.
+{
+  const windowHalf = LEVEL_BLEND_PX / 2 + 200;
+  const handoffDelta = maxStepDeltaOver(INTRO_PX - windowHalf, INTRO_PX + windowHalf);
+  const controlDelta = maxStepDeltaOver(INTRO_PX + PX_PER_LEVEL / 2 - windowHalf, INTRO_PX + PX_PER_LEVEL / 2 + windowHalf);
+  check('no hard pop at the intro-ramp handoff into the discrete levels', handoffDelta < controlDelta * 3,
+    `handoff=${handoffDelta.toFixed(2)} control=${controlDelta.toFixed(2)}`);
+}
+
+// a repeat cycle's "level 0" territory (well past x=INTRO_PX) is unaffected
+// by the intro ramp and uses the plain discrete level 0 directly
+check('cycle 1 level 0 uses the plain discrete level (not the intro ramp)',
+  Math.abs(roughAt(PX_PER_CYCLE + mid(0)) - WAVE_LEVELS[0].rough * 1.10) < 1e-9,
+  `${roughAt(PX_PER_CYCLE + mid(0))} vs ${WAVE_LEVELS[0].rough * 1.10}`);
 
 // 8) Sanity: rough never goes negative or absurd within a few cycles' reach.
 for (let c = 0; c < 5; c++) {
