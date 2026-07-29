@@ -30,6 +30,16 @@ const WAVE_LEVELS = [
 ];
 const REF_MAX_ROUGH = WAVE_LEVELS[WAVE_LEVELS.length - 1].rough;
 
+// never let more than this many full wave periods fit across the current
+// viewport (W, world px) — mirrors index.html's effectiveWavelen. W is a
+// plain mutable test variable here (no real DOM), set per-check below.
+const MIN_WAVES_PER_SCREEN = 5;
+let W = 0;
+function effectiveWavelen(l) {
+  const minL = W > 0 ? W / MIN_WAVES_PER_SCREEN : 0;
+  return Math.max(l, minL);
+}
+
 function peakProfile(th, q) {
   const s = Math.sin(th / 2);
   const u = Math.abs(s);
@@ -48,6 +58,28 @@ function peakOffset(q) {
   return off;
 }
 function hash01(n) { const s = Math.sin(n * 12.9898) * 43758.5453; return s - Math.floor(s); }
+
+// slowly-varying, smoothly-interpolated value noise used to break up the
+// wave field's perfect periodicity — mirrors index.html's valueNoise1D/
+// roughnessMod/irregAmtFor exactly.
+function valueNoise1D(x, seed) {
+  const i = Math.floor(x), f = x - i;
+  const a = hash01(i + seed), b = hash01(i + 1 + seed);
+  const t = f * f * (3 - 2 * f);
+  return { v: lerp(a, b, t), d: (b - a) * (6 * f - 6 * f * f) };
+}
+const WAVE_IRREGULARITY = 0.5;
+function roughnessMod(x, seed, amt) {
+  if (amt <= 0) return { m: 1, dm: 0 };
+  const n1 = valueNoise1D(x / 820, seed);
+  const n2 = valueNoise1D(x / 260, seed + 51.3);
+  const v = (n1.v - 0.5) * 0.7 + (n2.v - 0.5) * 0.3;
+  const dv = n1.d * (0.7 / 820) + n2.d * (0.3 / 260);
+  return { m: 1 + amt * v * 2, dm: amt * dv * 2 };
+}
+function irregAmtFor(effRough) {
+  return clamp((effRough - 1) / (REF_MAX_ROUGH - 1), 0, 1) * WAVE_IRREGULARITY;
+}
 let levelPhaseSeed = 42; // fixed for deterministic tests
 function levelCompPhase(levelIdx, compIdx) {
   return hash01(levelIdx * 17.3 + compIdx * 5.7 + levelPhaseSeed) * TAU;
@@ -98,7 +130,7 @@ function introParamsAt(x) {
 }
 function introRamp(x, t) {
   const p = introParamsAt(x);
-  const k = TAU / p.l;
+  const k = TAU / effectiveWavelen(p.l);
   const ph = k * x + p.s * k * t + levelCompPhase(-1, 0);
   const sy = p.a * Math.sin(ph), sslope = p.a * k * Math.cos(ph), svy = p.a * (p.s * k) * Math.cos(ph);
   let y = sy, slope = sslope, vy = svy;
@@ -110,7 +142,8 @@ function introRamp(x, t) {
     slope = lerp(sslope, cslope, p.concaveMix);
     vy = lerp(svy, cvy, p.concaveMix);
   }
-  return { y, slope, vy, rough: p.rough };
+  const { m, dm } = roughnessMod(x, -1 * 13.7 + levelPhaseSeed * 0.021, irregAmtFor(p.rough));
+  return { y: y * m, slope: slope * m + y * dm, vy: vy * m, rough: p.rough };
 }
 
 function roughAt(x) {
@@ -130,7 +163,7 @@ function evalLevel(levelIdx, mult, x, t) {
   let y = 0, slope = 0, vy = 0;
   for (let i = 0; i < level.comps.length; i++) {
     const c = level.comps[i];
-    const k = TAU / c.l;
+    const k = TAU / effectiveWavelen(c.l);
     const ph = k * x + c.s * k * t + levelCompPhase(levelIdx, i);
     const A = c.a * mult;
     if (c.q) {
@@ -144,7 +177,8 @@ function evalLevel(levelIdx, mult, x, t) {
       vy += A * (c.s * k) * Math.cos(ph);
     }
   }
-  return { y, slope, vy };
+  const { m, dm } = roughnessMod(x, levelIdx * 13.7 + levelPhaseSeed * 0.021, irregAmtFor(level.rough * mult));
+  return { y: y * m, slope: slope * m + y * dm, vy: vy * m };
 }
 function surfaceAt(x, t) {
   if (x < INTRO_PX) {
@@ -345,6 +379,66 @@ check('cycle 1 level 0 uses the plain discrete level (not the intro ramp)',
 for (let c = 0; c < 5; c++) {
   const r = roughAt(c * PX_PER_CYCLE + mid(9));
   check(`cycle ${c} hardest-level rough is positive and sane`, r > 0 && r < 20, `${r.toFixed(2)}`);
+}
+
+// 10) Minimum wavelength: never more than MIN_WAVES_PER_SCREEN full periods
+// fit across the current viewport. Several levels' shortest hand-tuned
+// wavelength (Maelstrom's 95px, Heavy chaos' 110px, etc.) are well under
+// what a normal desktop viewport divided by 5 works out to, so those need
+// the floor; level 0's 420px swell is already generous enough not to.
+{
+  const shortestL = Math.min(...WAVE_LEVELS.flatMap((lv) => lv.comps.map((c) => c.l)));
+  check('the shortest configured wavelength really is short enough to need flooring',
+    shortestL < 900 / MIN_WAVES_PER_SCREEN, `shortestL=${shortestL}`);
+  W = 900; // a typical desktop viewport
+  check('a too-short wavelength is floored up to W/5 on a normal desktop viewport',
+    Math.abs(effectiveWavelen(95) - 900 / 5) < 1e-9, `${effectiveWavelen(95)}`);
+  check('an already-long wavelength is left untouched',
+    effectiveWavelen(420) === 420, `${effectiveWavelen(420)}`);
+  W = 380; // a small phone viewport — the floor should relax accordingly
+  check('the floor relaxes on a narrower viewport', effectiveWavelen(95) === 95, `${effectiveWavelen(95)}`);
+  W = 0; // back to "unknown/unset" — must not floor to 0 (no NaN/Infinity from dividing by zero)
+  check('an unset viewport (W<=0) leaves wavelength untouched (no false floor)',
+    effectiveWavelen(95) === 95, `${effectiveWavelen(95)}`);
+}
+
+// 11) Height irregularity: rough is the only thing gating it — calm levels
+// (effRough <= 1) stay perfectly uniform, harder levels (effRough > 1) get
+// a genuinely varying crest height, growing towards WAVE_IRREGULARITY at
+// the hardest effective rough, so later/repeat-cycle stages read as
+// unpredictable chop rather than a perfectly repeating sum of sines.
+check('irregularity is exactly zero at calm rough (<=1)', irregAmtFor(0.65) === 0, `${irregAmtFor(0.65)}`);
+check('irregularity is exactly zero right at the rough=1 threshold', irregAmtFor(1) === 0, `${irregAmtFor(1)}`);
+check('irregularity is positive once rough exceeds 1', irregAmtFor(1.5) > 0, `${irregAmtFor(1.5)}`);
+check('irregularity grows with rough', irregAmtFor(2.5) > irregAmtFor(1.5), `${irregAmtFor(1.5)} vs ${irregAmtFor(2.5)}`);
+check('irregularity caps at WAVE_IRREGULARITY for the hardest effective rough',
+  Math.abs(irregAmtFor(REF_MAX_ROUGH * 2) - WAVE_IRREGULARITY) < 1e-9, `${irregAmtFor(REF_MAX_ROUGH * 2)}`);
+
+function crestHeights(startX, span, step) {
+  const ys = [];
+  for (let x = startX; x < startX + span; x += step) ys.push(surfaceAt(x, 0).y);
+  const peaks = [];
+  for (let i = 1; i < ys.length - 1; i++) if (ys[i] > ys[i - 1] && ys[i] >= ys[i + 1]) peaks.push(ys[i]);
+  return peaks;
+}
+function coeffOfVariation(arr) {
+  if (arr.length < 2) return 0;
+  const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+  const variance = arr.reduce((a, b) => a + (b - mean) ** 2, 0) / arr.length;
+  return Math.sqrt(variance) / Math.abs(mean || 1);
+}
+{
+  // level 0 in a repeat cycle (real discrete level, not the intro ramp)
+  const easyPeaks = crestHeights(PX_PER_CYCLE + 500, PX_PER_LEVEL - LEVEL_BLEND_PX - 1000, 4);
+  // level 9 "Maelstrom", cycle 0 — hardest base-cycle content
+  const hardPeaks = crestHeights(9 * PX_PER_LEVEL + 500, PX_PER_LEVEL - LEVEL_BLEND_PX - 1000, 2);
+  check('calm level-0 wave crests are all the same height (uniform, no irregularity)',
+    coeffOfVariation(easyPeaks) < 1e-6, `cv=${coeffOfVariation(easyPeaks)}`);
+  check('hard level-9 wave crests vary noticeably in height (genuine irregularity)',
+    coeffOfVariation(hardPeaks) > 0.05, `cv=${coeffOfVariation(hardPeaks)}`);
+  check('level-9 irregularity is much more pronounced than level-0\'s',
+    coeffOfVariation(hardPeaks) > coeffOfVariation(easyPeaks) * 10,
+    `easy=${coeffOfVariation(easyPeaks)} hard=${coeffOfVariation(hardPeaks)}`);
 }
 
 console.log(failures ? `\n${failures} check(s) FAILED` : '\nAll checks passed');
