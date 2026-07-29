@@ -67,52 +67,82 @@ async function readSizing(page) {
 }
 
 /* Find the rendered water line: strongest bright→dark luminance step down a
- * set of columns in the right 45% of the frame (clear of the beach). */
-async function findWaterLine(page) {
-  return page.evaluate(() => {
+ * set of columns in the right 45% of the frame (clear of the beach).
+ *
+ * Two defenses against false positives, found by reproducing rare failures
+ * (not random noise — the same mismatch recurred across separate runs):
+ *
+ * 1. Bounded to a window around the analytically-predicted water position
+ *    (from view.seaLine/camY, the same figures checkFrame cross-checks
+ *    against). The water is a multi-stop gradient (surface glow -> shallow
+ *    -> mid -> deep -> abyss, not a flat fill), so an unbounded "steepest
+ *    darkening" search can lock onto the gradient's own internal slope
+ *    somewhere in open water — more of it is visible at once on a tall
+ *    canvas (e.g. the "desktop" scenario).
+ * 2. The edge is found PER COLUMN and the median column wins, rather than
+ *    averaging all columns' luminance into one signal first. Food coins
+ *    render on the menu/ready screens too (spawning isn't gated by game
+ *    state) and a coin's bright glow over darker water below it is a
+ *    smaller-scale version of the same bright-above/dark-below pattern —
+ *    but a coin only crosses one or two of the 9 sampled columns, while the
+ *    real water line crosses all of them at close to the same row. The
+ *    median is immune to a minority of columns being misled by a coin. */
+async function findWaterLine(page, view) {
+  return page.evaluate((view) => {
     const c = document.getElementById('game');
     const g = c.getContext('2d');
     const { width: bw, height: bh } = c;
     const img = g.getImageData(0, 0, bw, bh).data;
     const xs = [];
     for (let fx = 0.55; fx <= 0.95; fx += 0.05) xs.push(Math.floor(fx * bw));
-    const lum = [];
+    const lum = (x, y) => {
+      const i = (y * bw + x) * 4;
+      return 0.2126 * img[i] + 0.7152 * img[i + 1] + 0.0722 * img[i + 2];
+    };
+    const cssToDevice = bh / parseFloat(getComputedStyle(c).height); // device px per css px
+    const expectedCssY = view.seaLine * view.VS + view.camY * view.VS;
+    const expectedIdx = (expectedCssY * cssToDevice) / 2; // /2: sampling every 2 device px
+    // Tight enough to stay well short of the gradient's own internal color
+    // stops (its 0.5/0.82 fraction points sit 150-250+ css px further down
+    // on a tall canvas) — every caller here is menu/ready/shrunk, always at
+    // cam.x=0, so real wave amplitude + whitecap + camera slop is nowhere
+    // near that large.
+    const MARGIN = (90 * cssToDevice) / 2;
+    const R = 10; // compare 20px-band means either side of the candidate row
+    const iMin = Math.max(R, Math.floor(expectedIdx - MARGIN));
+    const iMax = Math.min(Math.floor(bh / 2) - R, Math.ceil(expectedIdx + MARGIN));
+    const colEdges = [];
+    for (const x of xs) {
+      let bd = 0, bi = -1;
+      for (let i = iMin; i < iMax; i++) {
+        let above = 0, below = 0;
+        for (let k = 1; k <= R; k++) { above += lum(x, (i - k) * 2); below += lum(x, (i + k) * 2); }
+        const drop = (above - below) / R;
+        if (drop > bd) { bd = drop; bi = i; }
+      }
+      if (bi >= 0) colEdges.push({ idx: bi, drop: bd });
+    }
+    colEdges.sort((a, b) => a.idx - b.idx);
+    const mid = colEdges[Math.floor(colEdges.length / 2)] || { idx: -1, drop: 0 };
+    const bestIdx = mid.idx, bestDrop = mid.drop;
+    const lum1D = [];
     for (let y = 0; y < bh; y += 2) {
       let s = 0;
-      for (const x of xs) {
-        const i = (y * bw + x) * 4;
-        s += 0.2126 * img[i] + 0.7152 * img[i + 1] + 0.0722 * img[i + 2];
-      }
-      lum.push(s / xs.length);
-    }
-    let bestDrop = 0, bestIdx = -1;
-    // Wide enough that a thin decorative line (wind streaks, foam flecks)
-    // can't outweigh the sustained brightness difference across a real
-    // sky-to-water transition — a screen-space artifact only 1-2px tall
-    // barely moves a 10-row average, whereas the water boundary holds for
-    // many rows on both sides.
-    const R = 10; // compare 20px-band means either side of the candidate row
-    // search below the top third — the fiesta bunting and clouds up there
-    // also make hard bright→dark edges, but the sea never sits that high
-    const iMin = Math.max(R, Math.floor(lum.length * 0.32));
-    for (let i = iMin; i < lum.length - R; i++) {
-      let above = 0, below = 0;
-      for (let k = 1; k <= R; k++) { above += lum[i - k]; below += lum[i + k]; }
-      const drop = (above - below) / R;
-      if (drop > bestDrop) { bestDrop = drop; bestIdx = i; }
+      for (const x of xs) s += lum(x, y);
+      lum1D.push(s / xs.length);
     }
     const bandMean = (i0, i1) => {
       let s = 0, n = 0;
-      for (let i = Math.max(0, i0); i < Math.min(lum.length, i1); i++) { s += lum[i]; n++; }
+      for (let i = Math.max(0, i0); i < Math.min(lum1D.length, i1); i++) { s += lum1D[i]; n++; }
       return n ? s / n : 0;
     };
     return {
       waterCssY: bestIdx < 0 ? -1 : (bestIdx * 2) / (bh / parseFloat(getComputedStyle(c).height)),
       drop: bestDrop,
-      topLum: bandMean(0, Math.floor(lum.length * 0.1)),
-      bottomLum: bandMean(Math.ceil(lum.length * 0.9), lum.length),
+      topLum: bandMean(0, Math.floor(lum1D.length * 0.1)),
+      bottomLum: bandMean(Math.ceil(lum1D.length * 0.9), lum1D.length),
     };
-  });
+  }, view);
 }
 
 async function rectInViewport(page, sel) {
@@ -171,7 +201,8 @@ async function runScenario(browser, sc) {
   await page.waitForTimeout(600);
 
   // --- menu ---
-  checkFrame(sc.name, 'menu', await readSizing(page), await findWaterLine(page));
+  const szMenu = await readSizing(page);
+  checkFrame(sc.name, 'menu', szMenu, await findWaterLine(page, szMenu.view));
   const play = await rectInViewport(page, '#playBtn');
   expect(sc.name, 'menu: Play button fully on screen', play.visible && play.inside, JSON.stringify(play));
   const rotate = await page.evaluate(() => getComputedStyle(document.getElementById('rotate')).display);
@@ -183,7 +214,7 @@ async function runScenario(browser, sc) {
   await page.waitForTimeout(400);
   const szReady = await readSizing(page);
   expect(sc.name, 'ready: game entered ready state', szReady.state === 'ready', `state=${szReady.state}`);
-  checkFrame(sc.name, 'ready', szReady, await findWaterLine(page));
+  checkFrame(sc.name, 'ready', szReady, await findWaterLine(page, szReady.view));
   for (const sel of ['#hud', '#hint']) {   // #energy only appears in flight
     const r = await rectInViewport(page, sel);
     expect(sc.name, `ready: ${sel} visible inside viewport`, r.visible && r.inside, JSON.stringify(r));
@@ -194,7 +225,8 @@ async function runScenario(browser, sc) {
   const shrunk = Math.max(240, sc.h - 60);
   await page.setViewportSize({ width: sc.w, height: shrunk });
   await page.waitForTimeout(400);
-  checkFrame(sc.name, `shrunk-to-${shrunk}`, await readSizing(page), await findWaterLine(page));
+  const szShrunk = await readSizing(page);
+  checkFrame(sc.name, `shrunk-to-${shrunk}`, szShrunk, await findWaterLine(page, szShrunk.view));
   if (SHOTS) await page.screenshot({ path: join(SHOTS, `${sc.name}-shrunk.png`) });
 
   // --- fly, at the shrunken size (harshest case for the HUD) ---
