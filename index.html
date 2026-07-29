@@ -2,18 +2,26 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>OceanSkips — Beach Fiesta 🐟🎉</title>
 <link rel="icon" href="data:,">
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  * {
+    margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent;
+    /* touch-action is not inherited: set it on every element so double-tap /
+       pinch zoom is dead on the overlay buttons and cards too, while pan-x
+       pan-y keeps the shop panel and fish-card row scrollable. */
+    touch-action: pan-x pan-y;
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+  }
   html, body { height: 100%; overflow: hidden; }
   body {
     font-family: 'Comic Sans MS', 'Chalkboard SE', 'Segoe UI', system-ui, sans-serif;
     background: #0b2438; color: #123;
-    -webkit-user-select: none; user-select: none; touch-action: none;
+    touch-action: none;
   }
-  #game { position: fixed; inset: 0; display: block; }
+  #game { position: fixed; inset: 0; display: block; touch-action: none; }
 
   /* ---------- overlay screens ---------- */
   .screen {
@@ -339,6 +347,13 @@ function resize() {
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
 }
 window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => {
+  // iOS reports stale viewport sizes right after rotating; snap back to
+  // the top-left and re-measure once the new orientation has settled.
+  window.scrollTo(0, 0);
+  setTimeout(() => { window.scrollTo(0, 0); resize(); }, 250);
+});
+if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
 resize();
 
 /* ---------- water: stacked sines, rougher with distance ---------- */
@@ -1247,6 +1262,24 @@ function release() { held = false; }
 cvs.addEventListener('pointerdown', (e) => { e.preventDefault(); press(); });
 window.addEventListener('pointerup', release);
 window.addEventListener('pointercancel', release);
+
+/* iOS Safari ignores user-scalable=no, so kill its zoom gestures by hand:
+   pinch (gesture* + multi-touch move) and double-tap (quick second touchend).
+   Interactive elements are exempt from the double-tap guard so rapid
+   button-mashing on "Play again" still clicks. */
+for (const ev of ['gesturestart', 'gesturechange', 'gestureend'])
+  document.addEventListener(ev, (e) => e.preventDefault());
+document.addEventListener('touchmove', (e) => {
+  if (e.touches.length > 1) e.preventDefault();
+}, { passive: false });
+let lastTouchEnd = 0;
+document.addEventListener('touchend', (e) => {
+  const now = performance.now();
+  if (now - lastTouchEnd < 350 && !e.target.closest('button, .card, .cards, .panel'))
+    e.preventDefault();
+  lastTouchEnd = now;
+}, { passive: false });
+document.addEventListener('dblclick', (e) => e.preventDefault());
 
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space' || e.code === 'Enter') {
