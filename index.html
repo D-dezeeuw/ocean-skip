@@ -412,10 +412,17 @@ function peakProfile(th, q) {
            d: -q * Math.pow(ue, q - 1) * Math.sign(s) * Math.cos(th / 2) };
 }
 rollWaves();
+const CALM_START = 0.6;    // amplitude fraction right at the beach
+const CALM_DIST = 2200;    // px over which the sea eases up to full chop
 function roughAt(x) {
-  // saturating ramp: calm 1.0 at the beach → approaches ROUGH_MAX far out
+  // saturating ramp: calm-ish at the beach → approaches ROUGH_MAX far out,
+  // with an extra ease-in over the first stretch so the very start reads
+  // noticeably calmer instead of already at full chop from x = 0.
   const u = Math.max(0, x) / ROUGH_DIST;
-  return 1 + (ROUGH_MAX - 1) * (u / (u + 2));
+  const base = 1 + (ROUGH_MAX - 1) * (u / (u + 2));
+  const t = clamp(x / CALM_DIST, 0, 1);
+  const ease = CALM_START + (1 - CALM_START) * t * t * (3 - 2 * t); // smoothstep
+  return base * ease;
 }
 function surfaceAt(x, t) {
   const r = roughAt(x);
@@ -1376,6 +1383,7 @@ window.OceanSkips = {
     return { W, H, VS, DPR, seaLine: seaLine(), camX: cam.x, camY: cam.y,
              tossApex: TOSS_Y + 83 };
   },
+  roughAt, surfaceAt,   // exposed for wave-tuning tests
   warp(x) { cam.x = x; menuWrapLimit = Math.max(4200, x + 8000); },
 };
 
