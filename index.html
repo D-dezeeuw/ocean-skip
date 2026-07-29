@@ -345,11 +345,28 @@ resize();
 let waveComps = [];
 function rollWaves() {
   waveComps = [
-    { a: 9,  l: 330,  s: 62,  p: rand(0, TAU) },
-    { a: 6,  l: 170,  s: -44, p: rand(0, TAU) },
+    { a: 7,  l: 330,  s: 62,  p: rand(0, TAU) },
+    { a: 4,  l: 170,  s: -44, p: rand(0, TAU) },
     { a: 3,  l: 88,   s: 96,  p: rand(0, TAU) },
     { a: 16, l: 1500, s: 34,  p: rand(0, TAU) },  // slow ocean swell
+    // chop: cusped crests, broad troughs (q < 1 sharpens the peak)
+    { a: 9,  l: 260,  s: 50,  p: rand(0, TAU), q: 0.55 },
+    { a: 4,  l: 130,  s: -70, p: rand(0, TAU), q: 0.65 },
   ].map(c => ({ ...c, k: TAU / c.l }));
+  for (const c of waveComps) {
+    if (!c.q) continue;
+    let m = 0;                 // remove the peaked profile's DC offset
+    for (let i = 0; i < 64; i++) m += peakProfile((i / 64) * TAU, c.q).y;
+    c.off = m / 64;
+  }
+}
+// unit-amplitude wave with a sharp concave crest: y = 1 − 2·|sin(θ/2)|^q
+function peakProfile(th, q) {
+  const s = Math.sin(th / 2);
+  const u = Math.abs(s);
+  const ue = Math.max(u, 0.02);            // keep the cusp's slope finite
+  return { y: 1 - 2 * Math.pow(u, q),
+           d: -q * Math.pow(ue, q - 1) * Math.sign(s) * Math.cos(th / 2) };
 }
 rollWaves();
 function roughAt(x) {
@@ -363,9 +380,16 @@ function surfaceAt(x, t) {
   for (const c of waveComps) {
     const ph = c.k * x + (c.s * c.k) * t + c.p;
     const A = c.a * r;
-    y += A * Math.sin(ph);
-    slope += A * c.k * Math.cos(ph);
-    vy += A * (c.s * c.k) * Math.cos(ph);
+    if (c.q) {
+      const pk = peakProfile(ph, c.q);
+      y += A * (pk.y - c.off);
+      slope += A * pk.d * c.k;
+      vy += A * pk.d * (c.s * c.k);
+    } else {
+      y += A * Math.sin(ph);
+      slope += A * c.k * Math.cos(ph);
+      vy += A * (c.s * c.k) * Math.cos(ph);
+    }
   }
   return { y, slope, vy, rough: r };
 }
@@ -641,7 +665,8 @@ function stepPhysics(dt) {
     const s = surfaceAt(run.x, time);
     if (run.y <= s.y) {
       // surface normal tilted by the wave slope; grip < 1 = fish cuts through chop
-      let nx = -s.slope * st.waveGrip, ny = 1;
+      // (slope clamped so a landing right on a cusp can't produce a wild normal)
+      let nx = -clamp(s.slope, -1.6, 1.6) * st.waveGrip, ny = 1;
       const nl = Math.hypot(nx, ny); nx /= nl; ny /= nl;
       const vn = run.vx * nx + run.vy * ny;
       if (vn < 0) {
@@ -703,13 +728,14 @@ function stepCamera(dt) {
     tx = 0; ty = 0;
   } else { // menu drift
     cam.x += 24 * dt;
-    if (cam.x > 4200) cam.x = 0;
+    if (cam.x > menuWrapLimit) cam.x = 0;
     return;
   }
   const k = 1 - Math.pow(0.0018, dt);
   cam.x = lerp(cam.x, tx, k);
   cam.y = lerp(cam.y, ty, k);
 }
+let menuWrapLimit = 4200;
 const seaLine = () => H * 0.66;
 const w2sx = (x) => x - cam.x;
 const w2sy = (y) => seaLine() - (y - cam.y);
@@ -1062,6 +1088,18 @@ function drawSea(pal) {
     if (s.slope > 0.06) { ctx.moveTo(top[i][0], top[i][1] + 5); ctx.lineTo(top[i][0] + 14, top[i][1] + 7); }
   }
   ctx.stroke();
+
+  // whitecap flecks on sharp crests — a cusp shows up as a strong local
+  // second difference, which smooth sine tops never reach
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  for (let i = 2; i < top.length - 2; i++) {
+    const bump = (top[i - 2][1] + top[i + 2][1]) / 2 - top[i][1];
+    if (bump > 4) {
+      ctx.beginPath();
+      ctx.arc(top[i][0], top[i][1] + 1, clamp(bump * 0.35, 2, 5), 0, TAU);
+      ctx.fill();
+    }
+  }
 }
 
 function drawFoods() {
@@ -1266,13 +1304,14 @@ buildMenu();
 showScreen('menu');
 requestAnimationFrame(frame);
 
-// read-only peek for smoke tests / tuning from the console
+// peek + camera warp for smoke tests / tuning from the console
 window.OceanSkips = {
   get state() { return state; },
   get snapshot() {
     return { state, x: run.x, y: run.y, vx: run.vx, vy: run.vy,
              dist: run.dist, skips: run.skips, energy: run.energy };
   },
+  warp(x) { cam.x = x; menuWrapLimit = Math.max(4200, x + 8000); },
 };
 
 })();
