@@ -254,6 +254,7 @@ const SWEET_WIN = 80;           // contact quality window (px)
 const OPEN_OCEAN = 22000;       // px where it's fully "deep dark ocean"
 const ENERGY_FOOD = 25;         // energy per golden sphere
 const BOOST_ACC = 660;          // px/s² while holding
+const BOOST_DIVE = 260;         // px/s² added downward pull while holding — dive to aim your landing spot
 const BOOST_DRAIN = 30;         // energy per second
 
 /* ---------- the fish ---------- */
@@ -527,6 +528,16 @@ const WAVE_LEVELS = [
 ];
 const REF_MAX_ROUGH = WAVE_LEVELS[WAVE_LEVELS.length - 1].rough;
 
+// never let more than this many full wave periods fit across the current
+// viewport (W, world px) — some levels' hand-tuned wavelengths are short
+// enough that a wide screen would otherwise show a dozen+ tiny ripples at
+// once, which reads as noise rather than a readable wave pattern.
+const MIN_WAVES_PER_SCREEN = 5;
+function effectiveWavelen(l) {
+  const minL = W > 0 ? W / MIN_WAVES_PER_SCREEN : 0;
+  return Math.max(l, minL);
+}
+
 // unit-amplitude wave with a sharp concave crest: y = 1 − 2·|sin(θ/2)|^q
 function peakProfile(th, q) {
   const s = Math.sin(th / 2);
@@ -547,6 +558,31 @@ function peakOffset(q) {
     peakOffsetCache.set(q, off);
   }
   return off;
+}
+
+// slowly-varying, smoothly-interpolated value noise (grid hash + smoothstep
+// interpolation, so it's C1-continuous — no pops) used to break up the wave
+// field's perfect periodicity. Its strength scales with a level's effective
+// difficulty (irregAmtFor), so calm early levels stay clean/uniform while
+// later, harder levels read as genuinely rough and unpredictable instead of
+// a perfectly repeating sum of a few fixed sines.
+function valueNoise1D(x, seed) {
+  const i = Math.floor(x), f = x - i;
+  const a = hash01(i + seed), b = hash01(i + 1 + seed);
+  const t = f * f * (3 - 2 * f);
+  return { v: lerp(a, b, t), d: (b - a) * (6 * f - 6 * f * f) };
+}
+const WAVE_IRREGULARITY = 0.5; // max +/-50% height swing at the hardest effective rough
+function roughnessMod(x, seed, amt) {
+  if (amt <= 0) return { m: 1, dm: 0 };
+  const n1 = valueNoise1D(x / 820, seed);
+  const n2 = valueNoise1D(x / 260, seed + 51.3);
+  const v = (n1.v - 0.5) * 0.7 + (n2.v - 0.5) * 0.3;
+  const dv = n1.d * (0.7 / 820) + n2.d * (0.3 / 260);
+  return { m: 1 + amt * v * 2, dm: amt * dv * 2 };
+}
+function irregAmtFor(effRough) {
+  return clamp((effRough - 1) / (REF_MAX_ROUGH - 1), 0, 1) * WAVE_IRREGULARITY;
 }
 
 let levelPhaseSeed = 0; // rolled per run so repeats don't feel identical
@@ -587,7 +623,7 @@ function introParamsAt(x) {
 }
 function introRamp(x, t) {
   const p = introParamsAt(x);
-  const k = TAU / p.l;
+  const k = TAU / effectiveWavelen(p.l);
   const ph = k * x + p.s * k * t + levelCompPhase(-1, 0);
   const sy = p.a * Math.sin(ph), sslope = p.a * k * Math.cos(ph), svy = p.a * (p.s * k) * Math.cos(ph);
   let y = sy, slope = sslope, vy = svy;
@@ -599,7 +635,8 @@ function introRamp(x, t) {
     slope = lerp(sslope, cslope, p.concaveMix);
     vy = lerp(svy, cvy, p.concaveMix);
   }
-  return { y, slope, vy, rough: p.rough };
+  const { m, dm } = roughnessMod(x, -1 * 13.7 + levelPhaseSeed * 0.021, irregAmtFor(p.rough));
+  return { y: y * m, slope: slope * m + y * dm, vy: vy * m, rough: p.rough };
 }
 
 function levelInfoAt(x) {
@@ -643,7 +680,7 @@ function evalLevel(levelIdx, mult, x, t) {
   let y = 0, slope = 0, vy = 0;
   for (let i = 0; i < level.comps.length; i++) {
     const c = level.comps[i];
-    const k = TAU / c.l;
+    const k = TAU / effectiveWavelen(c.l);
     const ph = k * x + c.s * k * t + levelCompPhase(levelIdx, i);
     const A = c.a * mult;
     if (c.q) {
@@ -657,7 +694,8 @@ function evalLevel(levelIdx, mult, x, t) {
       vy += A * (c.s * k) * Math.cos(ph);
     }
   }
-  return { y, slope, vy };
+  const { m, dm } = roughnessMod(x, levelIdx * 13.7 + levelPhaseSeed * 0.021, irregAmtFor(level.rough * mult));
+  return { y: y * m, slope: slope * m + y * dm, vy: vy * m };
 }
 function surfaceAt(x, t) {
   if (x < INTRO_PX) {
@@ -1148,11 +1186,14 @@ function stepPhysics(dt) {
   }
 
   if (state === 'fly') {
-    // chili boost while held
+    // chili boost while held: speeds you up along your current heading AND
+    // pulls you down into a dive — the longer you hold, the sooner/steeper
+    // you come down, so you can choose where on the wave you land instead
+    // of always riding out the same arc
     if (held && run.energy > 0) {
       const sp = Math.hypot(run.vx, run.vy) || 1;
       run.vx += (run.vx / sp) * BOOST_ACC * dt;
-      run.vy += ((run.vy / sp) * BOOST_ACC + 170) * dt;
+      run.vy += (run.vy / sp) * BOOST_ACC * dt - BOOST_DIVE * dt;
       run.energy = Math.max(0, run.energy - BOOST_DRAIN * dt);
       if (time - run.boostSfxT > 0.1) { sfx.boost(); run.boostSfxT = time; }
       if (Math.random() < dt * 40) particles.push({
@@ -2202,6 +2243,9 @@ window.OceanSkips = {
   roughAt, surfaceAt, levelInfoAt,   // exposed for wave-tuning tests
   WAVE_LEVELS, PX_PER_LEVEL, LEVELS_PER_CYCLE, PX_PER_CYCLE, CYCLE_GROWTH, LEVEL_BLEND_PX,
   introParamsAt, INTRO_PX,   // exposed for intro-ramp tuning tests
+  effectiveWavelen, MIN_WAVES_PER_SCREEN, WAVE_IRREGULARITY, roughnessMod, irregAmtFor,
+  get W() { return W; },   // exposed for wavelength-floor tests (real viewport width)
+  BOOST_ACC, BOOST_DIVE, BOOST_DRAIN,   // exposed for boost-dive tests
   windAt, wind, rollWind, stats, shelterTopAt,   // exposed for wind-tuning tests
   get windStreaks() { return windStreaks.map(s => ({ ...s })); },   // debug only
   get flightEvents() {
