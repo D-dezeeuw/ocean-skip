@@ -6,6 +6,28 @@ Banana**, a high-definition living ocean (gradients, caustics, bubbles, light ra
 swaying plants), and a real **wind simulation** where high arcs catch wind and
 wave-skimming flight stays sheltered.
 
+## Progress
+
+- ✅ **M1 — Pipeline** (features 1, 2): `tools/gen-art.mjs` + `tools/art-manifest.mjs`
+  call OpenRouter's `google/gemini-2.5-flash-image`, chroma-key/trim/resize with
+  `sharp`, cache to `tools/art-cache/`, and `tools/inline-assets.mjs` writes the
+  selected subset into `index.html`'s `GENERATED_ASSETS` block. See `tools/README.md`.
+- 🔶 **M2 — Water core**, partial: feature 5 (multi-stop depth gradient) and feature 6
+  (two-layer scrolling caustics via the generated tile) are done in `drawSea`. Feature
+  11 (sun-glint band) and the foam-trail half of feature 10 are not done yet — only the
+  crest-stamp half (foam brush images on cusped crests, replacing the plain flecks).
+  Feature 7 (god rays) also landed early, pulled in from M3, using the generated ray
+  brush. Feature 9 (kelp beds) also landed early from M3 — sine-swayed, density-by-zone,
+  using the two generated frond sprites.
+- ⬜ Feature 3 (fish portrait card art) and feature 4 numbering shift — see the manifest;
+  fish portraits are still the procedural `drawFishShape` thumbnails, not generated art.
+- ⬜ Feature 8 (bubbles) intentionally skipped for now: the two generated bubble sprites
+  show visible chroma-key edge fringing at their small in-game size (≤48px) — see
+  `tools/README.md`'s known-limitation note — so bubbles should stay procedural
+  (canvas circle + highlight) rather than use the generated sprites as-is.
+- Everything in Phase C (wind, 13-18) and Phase D (19-20) is still as originally planned
+  below, untouched.
+
 ---
 
 ## Where the code stands today (anchors for everything below)
