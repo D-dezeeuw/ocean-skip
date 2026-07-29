@@ -660,22 +660,22 @@ initClouds();
 
 // wind-streak particles: fast horizontal streaks up high, calm near the
 // waves — the shear profile made visible so players learn "fly high for
-// wind" without reading anything. Screen-space, purely decorative.
+// wind" without reading anything. Purely screen-space (yFrac 0 = near the
+// water line, 1 = near the top of the sky) so streaks always sit in the
+// visible sky band regardless of where the camera has panned — anchoring
+// them to a fixed world-y altitude instead would scroll them out of view
+// during exactly the high arcs they're meant to highlight.
 let windStreaks = [];
 function initWindStreaks() {
   windStreaks = [];
-  for (let i = 0; i < 16; i++) windStreaks.push({ frac: rand(-1, 1), yFrac: rand(0, 1), len: rand(18, 46), shelterAmt: 0, worldY: 0 });
+  for (let i = 0; i < 16; i++) windStreaks.push({ frac: rand(-1, 1), yFrac: rand(0, 1), len: rand(18, 46) });
 }
 initWindStreaks();
 function stepWindStreaks(dt) {
   const mag = Math.abs(wind.base);
   if (mag < 10) return;
-  const lookX = (state === 'fly' || state === 'sink') ? run.x : cam.x + W * 0.4;
-  const top = shelterTopAt(lookX);
   for (const s of windStreaks) {
-    s.worldY = lerp(20, 520, s.yFrac);
-    s.shelterAmt = smoothstep(top, top + WIND_RAMP, s.worldY);
-    const speedPxPerSec = wind.dir * mag * (0.12 + s.shelterAmt * 1.1);
+    const speedPxPerSec = wind.dir * mag * (0.12 + s.yFrac * 1.1);
     s.frac += (speedPxPerSec * dt) / (W || 900);
     if (s.frac > 1.15 || s.frac < -1.15) {
       s.frac = s.frac > 0 ? -1.15 : 1.15;
@@ -1165,11 +1165,13 @@ function drawWindStreaks(pal) {
   ctx.lineWidth = 1.6;
   ctx.lineCap = 'round';
   const dir = wind.dir || 1;
+  const skyBottom = clamp(seaLine() * 0.8, 40, H - 20); // stay in the sky, above the water
   for (const s of windStreaks) {
-    if (s.shelterAmt < 0.06) continue;
+    const shelterAmt = smoothstep(0.12, 0.55, s.yFrac);
+    if (shelterAmt < 0.06) continue;
     const sx = ((s.frac + 1) / 2) * W;
-    const sy = w2sy(s.worldY);
-    ctx.globalAlpha = clamp(pal.light, 0, 1) * s.shelterAmt * 0.6;
+    const sy = lerp(skyBottom, 20, s.yFrac); // yFrac 0 near the water, 1 near the top
+    ctx.globalAlpha = clamp(pal.light, 0, 1) * shelterAmt * 0.6;
     ctx.beginPath();
     ctx.moveTo(sx - s.len * dir, sy);
     ctx.lineTo(sx, sy);
@@ -1998,6 +2000,7 @@ window.OceanSkips = {
   },
   roughAt, surfaceAt,   // exposed for wave-tuning tests
   windAt, wind, rollWind, stats, shelterTopAt,   // exposed for wind-tuning tests
+  get windStreaks() { return windStreaks.map(s => ({ ...s })); },   // debug only
   get flightEvents() {
     return { gustEvents: gustEvents.map(g => ({ ...g })), thermals: thermals.map(t => ({ ...t })), gustBoostT };
   },

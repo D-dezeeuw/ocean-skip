@@ -86,8 +86,42 @@ wave-skimming flight stays sheltered.
   - DPR cap of 2 was already in place from before this plan (`resize()`); unchanged.
 
 All 20 features are now addressed (implemented, or explicitly descoped with a reason —
-see the sky/horizon backdrops and bubble-sprite notes above). A full visual QA pass
-across every phase together is the next and final step.
+see the sky/horizon backdrops and bubble-sprite notes above).
+
+## Final visual QA pass
+
+Screenshot review across the menu (all 6 fish portraits, shop with Kite Fins), every
+water zone (beach/mid/dark ocean), Velero's flight, sink + results, gust/thermal events,
+and `prefers-reduced-motion` mode — one real bug found and fixed:
+
+- **Wind streaks were positioned in fixed world-y coordinates**, but the camera pans to
+  follow the fish's altitude in flight (`stepCamera`'s `ty = run.y - H*0.45`). A high arc
+  — the exact scenario the streaks exist to highlight — could push the fixed 20-520
+  world-y band far off the top of the screen (verified: at `run.y≈296`, `cam.y≈82`, the
+  streak band mapped to on-screen y from -108 to 392, i.e. mostly above the visible
+  canvas or crowded against the water line). Fixed by making streaks purely
+  screen-relative (`yFrac` 0 = near the water line, 1 = near the top of the sky, both
+  computed straight in screen space), matching how `drawGustFronts`/`drawThermals`
+  already worked. Confirmed via direct pixel sampling: negligible contrast before the
+  fix during a high arc, and up to 8-17 luminance-unit contrast after, in the same
+  altitude band, in both the beach and dark-ocean zones.
+- Streak contrast is real but visually subtle against the beach zone's bright pastel sky
+  (its color stops already sit around 200-235 luminance) — confirmed intentional-feeling
+  rather than broken, and much more visible in the darker zones. Left as-is.
+- `tests/layout.mjs`'s water-line pixel scan needed two follow-up hardenings surfaced by
+  this pass (both test-only, no game code involved): bounding the search to a window
+  around the analytically-predicted water position instead of scanning the whole frame
+  (an unbounded search could lock onto the multi-stop gradient's own internal slope
+  instead of the sky/water boundary, more likely on tall canvases), and detecting the
+  edge per-column with the median column winning rather than averaging all columns
+  first (a food coin's glow — coins render on the menu/ready screens too, spawning isn't
+  gated by state — crosses at most one or two of the 9 sampled columns, while the real
+  water line crosses all of them; the median is immune to a minority being misled).
+  Verified stable across 15 consecutive runs after the fix, reproducing at roughly 1-in-8
+  before it.
+- Everything else — menu, shop, zone progression, Velero's sail-fin shape and portrait,
+  sink overlay, results screen, the gust popup and ambient bubbles, reduced-motion
+  gating — matched expectations with no further changes needed.
 
 ---
 
