@@ -8,6 +8,13 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="OceanSkips">
 <meta name="theme-color" content="#0b2438">
+<!-- GitHub Pages sits behind a CDN that can serve a stale deploy for a few
+     minutes, and mobile "add to home screen" bookmarks cache even harder on
+     top of that — these are a first line of defense; sw.js (registered
+     below) is what actually forces a fresh fetch past both layers. -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <link rel="manifest" href='data:application/manifest+json,{"name":"OceanSkips","short_name":"OceanSkips","display":"fullscreen","orientation":"landscape","background_color":"%230b2438","theme_color":"%230b2438"}'>
 <title>OceanSkips — Beach Fiesta 🐟🎉</title>
 <link rel="icon" href="data:,">
@@ -1371,6 +1378,22 @@ window.OceanSkips = {
   },
   warp(x) { cam.x = x; menuWrapLimit = Math.max(4200, x + 8000); },
 };
+
+/* ---------- cache-busting service worker ---------- */
+// serviceWorker.register() throws under file:// (used by the headless
+// layout tests and by anyone opening this file straight off disk) — only
+// register when actually served over http(s).
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+  // controllerchange fires when a new sw.js version takes over; reload once
+  // so the fresh build shows up immediately instead of needing a second
+  // visit. Skip it on the very first-ever install (hadController is false),
+  // since there's nothing stale to replace yet.
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController) location.reload();
+  });
+}
 
 })();
 </script>
