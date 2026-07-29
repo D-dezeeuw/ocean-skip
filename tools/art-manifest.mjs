@@ -88,6 +88,58 @@ export const ASSETS = [
       'pale-yellow-white, soft-edged and diffuse like a sunbeam shining down ' +
       'through water, no other elements.' + SPRITE_SUFFIX,
   },
+  {
+    id: 'portraitChispa',
+    mode: 'sprite',
+    w: 160, h: 90,
+    prompt: 'A cute cartoon sardine fish mascot character named Chispa: vivid ' +
+      'cyan-blue body (#43c6e0), pale cream belly, hot-pink fin (#f0567e), big ' +
+      'friendly sparkling eye, energetic mid-swim pose facing right, playful ' +
+      'beach-fiesta sticker illustration style, bold clean outlines, flat vivid ' +
+      'colors, wide horizontal framing.' + SPRITE_SUFFIX,
+  },
+  {
+    id: 'portraitVolador',
+    mode: 'sprite',
+    w: 160, h: 90,
+    prompt: 'A cute cartoon flying fish mascot character named Volador: ' +
+      'periwinkle-blue body (#7f9bd8), pale lavender belly, large golden-yellow ' +
+      'wing-like fin (#ffd93b) spread out mid-glide, big friendly eye, dynamic ' +
+      'soaring pose facing right, playful beach-fiesta sticker illustration ' +
+      'style, bold clean outlines, flat vivid colors, wide horizontal framing.' +
+      SPRITE_SUFFIX,
+  },
+  {
+    id: 'portraitGlobo',
+    mode: 'sprite',
+    w: 160, h: 90,
+    prompt: 'A cute round cartoon pufferfish mascot character named Globo: ' +
+      'golden-orange round puffed-up body (#f2b04e), pale cream belly, small ' +
+      'burnt-orange fin (#e0642f), tiny spikes, big friendly eye, comically ' +
+      'round inflated pose facing right, playful beach-fiesta sticker ' +
+      'illustration style, bold clean outlines, flat vivid colors, wide ' +
+      'horizontal framing.' + SPRITE_SUFFIX,
+  },
+  {
+    id: 'portraitRayo',
+    mode: 'sprite',
+    w: 160, h: 90,
+    prompt: 'A cute cartoon mackerel fish mascot character named Rayo: sleek ' +
+      'teal-green streamlined body (#59c9a5), pale mint belly, purple fin ' +
+      '(#8e44ad), big friendly eye, fast rocket-like dart pose facing right ' +
+      'with speed lines, playful beach-fiesta sticker illustration style, bold ' +
+      'clean outlines, flat vivid colors, wide horizontal framing.' + SPRITE_SUFFIX,
+  },
+  {
+    id: 'portraitDonatun',
+    mode: 'sprite',
+    w: 160, h: 90,
+    prompt: 'A cute cartoon tuna fish mascot character named Don Atun: sturdy ' +
+      'heavyset blue-grey body (#5b6ea8), pale blue belly, teal-green fin ' +
+      '(#2c8c74), big friendly confident eye, calm sturdy pose facing right, ' +
+      'playful beach-fiesta sticker illustration style, bold clean outlines, ' +
+      'flat vivid colors, wide horizontal framing.' + SPRITE_SUFFIX,
+  },
 ];
 
 export const ART_CACHE_DIR = new URL('./art-cache/', import.meta.url).pathname;
