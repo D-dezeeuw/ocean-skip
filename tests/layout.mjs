@@ -86,7 +86,12 @@ async function findWaterLine(page) {
       lum.push(s / xs.length);
     }
     let bestDrop = 0, bestIdx = -1;
-    const R = 5; // compare 10px-band means either side of the candidate row
+    // Wide enough that a thin decorative line (wind streaks, foam flecks)
+    // can't outweigh the sustained brightness difference across a real
+    // sky-to-water transition — a screen-space artifact only 1-2px tall
+    // barely moves a 10-row average, whereas the water boundary holds for
+    // many rows on both sides.
+    const R = 10; // compare 20px-band means either side of the candidate row
     // search below the top third — the fiesta bunting and clouds up there
     // also make hard bright→dark edges, but the sea never sits that high
     const iMin = Math.max(R, Math.floor(lum.length * 0.32));
