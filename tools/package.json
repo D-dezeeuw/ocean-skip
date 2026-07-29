@@ -1,0 +1,13 @@
+{
+  "name": "ocean-skip-art-tools",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Dev-only Nano Banana (OpenRouter) art generation pipeline for OceanSkips. Not shipped — the game stays a dependency-free single index.html.",
+  "scripts": {
+    "gen-art": "node gen-art.mjs"
+  },
+  "dependencies": {
+    "sharp": "^0.33.5"
+  }
+}
