@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<title>OceanSkips — ¡Fiesta en la Playa! 🐟🎉</title>
+<title>OceanSkips — Beach Fiesta 🐟🎉</title>
 <link rel="icon" href="data:,">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -168,11 +168,11 @@
 <!-- ---------- MENU ---------- -->
 <div id="menu" class="screen">
   <h1 class="logo">Ocean<span class="o2">Skips</span></h1>
-  <div class="tagline">¡Fiesta en la playa! Batea tu pez por todo el océano 🌊🎉</div>
+  <div class="tagline">Beach fiesta! Bat your fish clear across the ocean 🌊🎉</div>
   <div class="cards" id="fishCards"></div>
   <div class="rowbtns">
-    <button class="btn" id="playBtn">¡Vámonos! 🐟</button>
-    <button class="btn pink" id="shopBtn">Mercado 🛠️</button>
+    <button class="btn" id="playBtn">Play! 🐟</button>
+    <button class="btn pink" id="shopBtn">Shop 🛠️</button>
   </div>
   <div class="tagline" id="menuStats"></div>
 </div>
@@ -180,29 +180,29 @@
 <!-- ---------- SHOP ---------- -->
 <div id="shop" class="screen hidden">
   <div class="panel">
-    <h2>Mercado 🛠️</h2>
+    <h2>Shop 🛠️</h2>
     <div class="foodbal" id="shopFood">🟡 0</div>
     <div id="upRows"></div>
     <br>
-    <button class="btn pink" id="shopBack">Volver</button>
+    <button class="btn pink" id="shopBack">Back</button>
   </div>
 </div>
 
 <!-- ---------- RESULTS ---------- -->
 <div id="results" class="screen hidden">
   <div class="panel">
-    <h2 id="resTitle">¡Chapuzón!</h2>
+    <h2 id="resTitle">Splashdown!</h2>
     <div class="big" id="resDist">0 m</div>
     <div id="resBestNote"></div>
     <p id="resLine" style="margin:6px 0 12px; font-size:13px; color:#245;"></p>
     <div class="rowbtns">
-      <button class="btn" id="againBtn">¡Otra vez! 🔁</button>
-      <button class="btn pink" id="menuBtn">Menú</button>
+      <button class="btn" id="againBtn">Play again 🔁</button>
+      <button class="btn pink" id="menuBtn">Menu</button>
     </div>
   </div>
 </div>
 
-<div id="rotate"><div class="ph">📱</div>¡Gira tu teléfono!<br><small>OceanSkips se juega en horizontal 🌴</small></div>
+<div id="rotate"><div class="ph">📱</div>Rotate your phone!<br><small>OceanSkips is played in landscape 🌴</small></div>
 
 <script>
 'use strict';
@@ -238,23 +238,23 @@ const BOOST_DRAIN = 30;         // energy per second
 
 /* ---------- the fish ---------- */
 const FISH = [
-  { id: 'chispa', name: 'Chispa', species: 'la Sardina', shape: 'slim',
-    blurb: 'La reina del rebote. Skips like she was born for it. (She was.)',
+  { id: 'chispa', name: 'Chispa', species: 'the Sardine', shape: 'slim',
+    blurb: 'Queen of the bounce. Skips like she was born for it. (She was.)',
     power: 1.0, bounce: 0.58, drag: 0.10, lift: 0, minSkim: 250, seaLegs: 0.30, waveGrip: 1.0, size: 40,
     colors: { body: '#43c6e0', belly: '#eef9fc', fin: '#f0567e' } },
-  { id: 'volador', name: 'Volador', species: 'el Pez Volador', shape: 'wing',
+  { id: 'volador', name: 'Volador', species: 'the Flying Fish', shape: 'wing',
     blurb: 'Barely touches the water at all. Big waves ruin the hairdo.',
     power: 0.95, bounce: 0.50, drag: 0.045, lift: 0.55, minSkim: 240, seaLegs: 0.10, waveGrip: 1.2, size: 42,
     colors: { body: '#7f9bd8', belly: '#eef2ff', fin: '#ffd93b' } },
-  { id: 'globo', name: 'Globo', species: 'el Pez Globo', shape: 'puff',
+  { id: 'globo', name: 'Globo', species: 'the Pufferfish', shape: 'puff',
     blurb: 'Round. Bouncy. Extremely round. Boings off every wave.',
     power: 0.80, bounce: 0.80, drag: 0.16, lift: 0, minSkim: 200, seaLegs: 0.45, waveGrip: 0.9, size: 44,
     colors: { body: '#f2b04e', belly: '#ffedc9', fin: '#e0642f' } },
-  { id: 'rayo', name: 'Rayo', species: 'la Sierra', shape: 'dart',
-    blurb: 'Launches like a cohete. Lands like a coin flip.',
+  { id: 'rayo', name: 'Rayo', species: 'the Mackerel', shape: 'dart',
+    blurb: 'Launches like a rocket. Lands like a coin flip.',
     power: 1.25, bounce: 0.48, drag: 0.075, lift: 0, minSkim: 300, seaLegs: 0.25, waveGrip: 0.8, size: 44,
     colors: { body: '#59c9a5', belly: '#e2f8f0', fin: '#8e44ad' } },
-  { id: 'donatun', name: 'Don Atún', species: 'el Jefe', shape: 'tank',
+  { id: 'donatun', name: 'Don Atún', species: 'the Tuna', shape: 'tank',
     blurb: 'Heavy. Slow to impress. The rough sea respects him.',
     power: 1.15, bounce: 0.50, drag: 0.12, lift: 0, minSkim: 280, seaLegs: 0.90, waveGrip: 0.5, size: 54,
     colors: { body: '#5b6ea8', belly: '#e2e8f6', fin: '#2c8c74' } },
@@ -262,11 +262,11 @@ const FISH = [
 
 /* ---------- upgrades ---------- */
 const UPGRADES = [
-  { id: 'power',  icon: '💪', name: 'Súper Batazo',    desc: '+8% launch power per level' },
-  { id: 'slick',  icon: '✨', name: 'Escamas Chidas',  desc: '−9% air drag per level' },
-  { id: 'rubber', icon: '🏀', name: 'Panza de Goma',   desc: '+6% bounce per level' },
-  { id: 'magnet', icon: '🧲', name: 'Imán de Botanas', desc: 'Pulls in fish food from further away' },
-  { id: 'chili',  icon: '🌶️', name: 'Energía Picante', desc: '+20 max boost energy per level' },
+  { id: 'power',  icon: '💪', name: 'Super Swing', desc: '+8% launch power per level' },
+  { id: 'slick',  icon: '✨', name: 'Slick Scales', desc: '−9% air drag per level' },
+  { id: 'rubber', icon: '🏀', name: 'Rubber Belly', desc: '+6% bounce per level' },
+  { id: 'magnet', icon: '🧲', name: 'Snack Magnet', desc: 'Pulls in fish food from further away' },
+  { id: 'chili',  icon: '🌶️', name: 'Chili Energy', desc: '+20 max boost energy per level' },
 ];
 const UP_MAX = 5;
 const upCost = (lvl) => Math.round(20 * Math.pow(2.15, lvl) / 5) * 5;
@@ -521,7 +521,7 @@ function startRun() {
   foods = []; nextFoodX = 800; particles = []; popups = [];
   showScreen(null);
   hud(true);
-  setHint('¡Toca para lanzar el pez! (tap to toss)');
+  setHint('Tap to toss your fish up!');
 }
 function toss() {
   state = 'toss';
@@ -533,7 +533,7 @@ function swing() {
   const st = stats();
   run.swingT = 0;
   const q = clamp(1 - Math.abs(run.y - SWEET_Y) / SWEET_WIN, 0, 1);
-  if (q <= 0.02) { flop('¡Abanicaste! 💨'); sfx.whiff(); return; }
+  if (q <= 0.02) { flop('Swing and a miss! 💨'); sfx.whiff(); return; }
   // contact height → angle: hit high (early) = steep, hit low (late) = flat;
   // sweet spot gives a skip-friendly 30°
   const angleDeg = clamp(30 + (run.y - SWEET_Y) * 0.38, 12, 62);
@@ -578,20 +578,20 @@ function endRun() {
   document.getElementById('resTitle').textContent = pickTitle(m, isBest);
   document.getElementById('resDist').textContent = m + ' m';
   document.getElementById('resBestNote').innerHTML = isBest
-    ? '<span class="newbest">🏆 ¡NUEVO RÉCORD!</span>' : `Récord: ${save.best} m`;
+    ? '<span class="newbest">🏆 NEW BEST!</span>' : `Best: ${save.best} m`;
   document.getElementById('resLine').textContent =
     `${run.skips} skip${run.skips === 1 ? '' : 's'} · 🟡 ${run.food} fish food` +
-    (run.dist > OPEN_OCEAN ? ' · ¡llegaste al mar abierto! 🌑🌊' : '');
+    (run.dist > OPEN_OCEAN ? ' · you reached the open ocean! 🌑🌊' : '');
   showScreen('results');
   if (isBest && m > 0) sfx.best();
 }
 function pickTitle(m, best) {
-  if (best && m > 0) return '¡LEYENDA DEL MAR!';
-  if (m < 40) return '¡Chapuzón!';
-  if (m < 150) return '¡Nada mal!';
-  if (m < 350) return '¡Órale!';
-  if (m < 550) return '¡Las gaviotas aplauden!';
-  return '¡Increíble!';
+  if (best && m > 0) return 'Legend of the Sea!';
+  if (m < 40) return 'Splashdown!';
+  if (m < 150) return 'Not bad!';
+  if (m < 350) return '¡Órale! Nice one!';
+  if (m < 550) return 'The seagulls are impressed!';
+  return 'Absolutely oceanic!';
 }
 
 /* ---------- physics ---------- */
@@ -603,7 +603,7 @@ function stepPhysics(dt) {
   if (state === 'toss') {
     run.vy -= G * dt;
     run.y += run.vy * dt;
-    if (run.y < TOSS_Y - 26 && run.vy < 0) { flop('¡Uy! Se cayó 😅'); sfx.whiff(); run.swingT = -1; }
+    if (run.y < TOSS_Y - 26 && run.vy < 0) { flop('Oops — dropped it! 😅'); sfx.whiff(); run.swingT = -1; }
   }
 
   if (state === 'fly') {
@@ -634,8 +634,8 @@ function stepPhysics(dt) {
     run.wiggle += dt * (6 + sp * 0.004);
 
     // zone announcements
-    if (run.zoneShown === 0 && run.x > 9000)  { run.zoneShown = 1; popup('~ Mar Adentro ~', run.x, run.y + 90, { size: 26, color: '#dff6ff' }); }
-    if (run.zoneShown === 1 && run.x > OPEN_OCEAN) { run.zoneShown = 2; popup('~ ¡MAR ABIERTO! ~', run.x, run.y + 90, { size: 28, color: '#ffd93b' }); }
+    if (run.zoneShown === 0 && run.x > 9000)  { run.zoneShown = 1; popup('~ Open Water ~', run.x, run.y + 90, { size: 26, color: '#dff6ff' }); }
+    if (run.zoneShown === 1 && run.x > OPEN_OCEAN) { run.zoneShown = 2; popup('~ THE OPEN OCEAN! ~', run.x, run.y + 90, { size: 28, color: '#ffd93b' }); }
 
     // food pickups (with magnet pull)
     for (const f of foods) {
@@ -1207,7 +1207,7 @@ function buildMenu() {
   refreshMenuStats();
 }
 function refreshMenuStats() {
-  $('menuStats').textContent = `🏆 récord: ${save.best} m · 🟡 ${save.food} · runs: ${save.runs}`;
+  $('menuStats').textContent = `🏆 best: ${save.best} m · 🟡 ${save.food} · runs: ${save.runs}`;
 }
 function buildShop() {
   $('shopFood').textContent = `🟡 ${save.food} fish food`;

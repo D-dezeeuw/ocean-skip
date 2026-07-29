@@ -19,7 +19,7 @@ offline; designed for landscape mobile.
    Golden fish-food spheres refill energy and bank as shop currency.
 5. Wave slope tilts every bounce; drop below the fish's minimum skim speed
    and it sinks. The sea gets darker and rougher the farther you fly.
-6. Spend food in the Mercado on permanent upgrades (localStorage save).
+6. Spend food in the shop on permanent upgrades (localStorage save).
 
 ## Code layout (single file, sectioned)
 
