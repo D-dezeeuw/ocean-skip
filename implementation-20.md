@@ -44,8 +44,21 @@ wave-skimming flight stays sheltered.
   show a clear tailwind > calm > headwind ordering — confirms the "rebalance so calm-day
   distances stay comparable" goal is met by the shelter mechanic itself, with no
   `LAUNCH_BASE` changes needed.
-- Everything in Phase C's remaining features (15, 17, 18) and Phase D (19-20) is still
-  as originally planned below, untouched.
+- ✅ **M5 — Wind content** (15, 17, 18): Velero the Sailfish is FISH[]'s 6th entry
+  (`sail: 1.6`, the highest; `minSkim: 320`, the highest — clumsy without wind, a rocket
+  with it), with a new `shape: 'sail'` dorsal-fin variant in `drawFishShape` and a
+  generated portrait. Gust fronts and thermal columns (`spawnGustsAhead`/
+  `spawnThermalsAhead`) spawn distance-seeded exactly like food; a gust wall gives a
+  temporary `gustBoostT`-driven wind spike (folded into `windAt` as `gustFrontBoost`)
+  with a shimmer visual and whoosh cue; thermals apply `thermalLiftAt` (a bell curve in
+  x and altitude, strongest around mid-height) with a wavy warm-tinted visual. Kite Fins
+  is `UPGRADES`' 6th row: `stats().sail` gets +10%/level as before, and a new
+  `headwindSoften` term (up to −25% headwind bite at max level) specifically softens bad
+  wind days — the two halves of the plan's "raises tailwind pull, softens headwind
+  penalty" description. Continuous wind-whoosh audio (`updateWindAudio`): a looped noise
+  buffer through a bandpass filter, gain/frequency tracking air-relative speed × altitude
+  in real time, silenced on `beginSink()`.
+- Everything in Phase D (19-20) is still as originally planned below, untouched.
 
 ---
 

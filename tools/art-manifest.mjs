@@ -140,6 +140,17 @@ export const ASSETS = [
       'playful beach-fiesta sticker illustration style, bold clean outlines, ' +
       'flat vivid colors, wide horizontal framing.' + SPRITE_SUFFIX,
   },
+  {
+    id: 'portraitVelero',
+    mode: 'sprite',
+    w: 160, h: 90,
+    prompt: 'A cute cartoon sailfish mascot character named Velero: deep blue ' +
+      'streamlined body (#3d5a99), pale blue belly, a huge dramatic bright cyan ' +
+      'sail-like dorsal fin (#00c2d6) spread tall and proud, big friendly eye, ' +
+      'confident pose facing right catching the wind, playful beach-fiesta ' +
+      'sticker illustration style, bold clean outlines, flat vivid colors, wide ' +
+      'horizontal framing.' + SPRITE_SUFFIX,
+  },
 ];
 
 export const ART_CACHE_DIR = new URL('./art-cache/', import.meta.url).pathname;
