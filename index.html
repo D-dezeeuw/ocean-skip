@@ -307,21 +307,46 @@ const TRAIL_DT = 0.018;         // seconds between trail samples (~55/s, not eve
 const SKIM_LIFT = 530;
 const SKIM_LIFT_FALLOFF = 0.65;
 const SPEED_LINES_MIN = 1600;   // px/s above which speed-line streaks appear
-// Contact must be this grazing (0 = flat, 1 = vertical) or shallower. This
-// tracks the water-reaction lift: because a skip leaves at ~SKIM_LIFT and
-// returns at roughly the same vertical speed, the natural contact angle sits
-// around lift/speed — measured median 0.41, spread 0.34-0.48. The threshold
-// is set just under the lower quartile so a sweet skip means "you came in
-// flatter than usual for this speed", which is what carrying speed and using
-// the boost-dive actually buys you. In practice the downslope requirement is
-// the binding constraint (loosening this to 0.40 does not move the in-play
-// rate), so a sweet skip lands on roughly 6% of skips. Retune whenever
-// SKIM_LIFT moves; tests/skip-feel.mjs guards the resulting in-play rate.
-const SWEET_SKIP_STEEP = 0.38;
+// How much flatter than a natural skim an arrival must be to count as a
+// sweet skip, as a fraction of that natural angle (see the bounce block).
+// Below 1 means "you came in flatter than this speed would give you for
+// free", which is what carrying speed and aiming the boost-dive buys.
+const SWEET_SKIP_REL = 0.88;
+// Ramp launch tuning. A rising wave face acts as a jump; RAMP_FULL_SLOPE is
+// set near what the ocean actually offers (early waves peak around 0.017,
+// open water around 0.07-0.10) so calm seas give gentle ramps and rough seas
+// give big ones, rather than the mechanic sitting dormant until 2500m the way
+// the sweet-skip threshold originally did. RAMP_COST is what stops it being
+// free: height is bought with forward speed.
+const RAMP_MIN_SLOPE = 0.008;   // below this the face is flat, no launch
+const RAMP_FULL_SLOPE = 0.035;  // local peak at/above this counts as a fully-formed wave face
+const RAMP_GAIN = 0.62;         // fraction of speed convertible to lift on a perfect face.
+                                // Higher values launch impressively but drop the fish back in
+                                // near-vertically, which the grazing penalty then punishes and
+                                // the ramp gate excludes — collapsing the next few hops into
+                                // the surface slide this whole mechanic exists to avoid.
+const RAMP_MIN_SPEED = 0.42;    // fraction of LAUNCH_BASE needed to plane off a face at all;
+                                // below it a rising face is just water, so a tiring fish can't
+                                // ramp itself into a stall
+const RAMP_COST = 0.45;         // forward speed surrendered per unit of lift on a POOR hit
+                                // (scaled down by up to 60% as ramp quality approaches 1)
+const RAMP_MAX_STEEP = 0.62;    // a plunging arrival digs in instead of ramping
+// How much a calm sea's ramps are scaled down relative to a fully-formed
+// wave. At 0.45 this squeezed calm water into a 0.45-0.54 quality band, so
+// clearing the celebration bar meant landing within ~8% of the single
+// steepest point in view — measured 1-2 launch-worthy faces per 150m run,
+// which is too sparse for a mechanic the player is meant to aim at. 0.70
+// keeps rough seas clearly better while leaving the opening stretch playable.
+const RAMP_CALM_FLOOR = 0.70;
+const RAMP_COUNT_Q = 0.25;      // quality above which a launch counts as a ramp at all
+const RAMP_CHEER_Q = 0.50;      // ...and above which it gets a popup and a fanfare. Deliberately
+                                // under what calm water can reach (~0.54): ramp reward scales with
+                                // how substantial the local waves are, so at 0.55 the opening
+                                // stretch could essentially never celebrate a launch.
 // Minimum downslope magnitude (s.slope) to count as a real descending face.
 // This is deliberately a small deadzone, not the skill gate — it only rules
 // out flat/rising water. The actual skill test is the grazing-contact check
-// (SWEET_SKIP_STEEP). It was 0.05, which no wave in the first ~600m of a run
+// (SWEET_SKIP_REL). It was 0.05, which no wave in the first ~600m of a run
 // ever reaches (they top out around 0.017-0.043), so the whole mechanic was
 // unreachable in the part of the ocean players actually spend their time in.
 const SWEET_SKIP_SLOPE = 0.012;
@@ -597,6 +622,7 @@ const sfx = {
   pearl:   () => [1200, 1600, 2000].forEach((f, i) => tone(f, 0.09, { type: 'sine', vol: 0.09, delay: i * 0.04 })),
   chiliPickup: () => { tone(300, 0.2, { type: 'square', vol: 0.14, slide: 260 }); noiseBurst(900, 0.14, { vol: 0.1 }); },
   unlock:  () => [392, 523, 659, 784, 1047].forEach((f, i) => tone(f, 0.16, { type: 'square', vol: 0.11, delay: i * 0.08 })),
+  ramp: (q) => { tone(300 + q * 260, 0.22, { type: 'triangle', vol: 0.14, slide: 340 * q }); noiseBurst(700, 0.16, { vol: 0.07, freqSlide: 420 }); },
   seaState: () => { tone(180, 0.5, { type: 'sine', vol: 0.09, slide: 40 }); noiseBurst(420, 0.45, { vol: 0.05, freqSlide: 160 }); },
   mission: () => [523, 784].forEach((f, i) => tone(f, 0.12, { type: 'triangle', vol: 0.1, delay: i * 0.06 })),
   medal:   () => [392, 523, 659, 880, 1047, 1319].forEach((f, i) => tone(f, 0.15, { type: 'square', vol: 0.1, delay: i * 0.07 })),
@@ -784,6 +810,25 @@ const REF_MAX_ROUGH = WAVE_LEVELS[WAVE_LEVELS.length - 1].rough;
 // named sea states. Sorted once so the lookup is a simple nearest-match.
 const SEA_STATES = WAVE_LEVELS.map((l) => ({ name: l.name, rough: l.rough }))
   .sort((a, b) => a.rough - b.rough);
+// Steepest rising face within `reach` px of x. Ramp quality is judged
+// against this rather than a fixed angle, so "you hit the best face around
+// here" means the same thing in a flat opening swell (peak slope ~0.017) as
+// in open ocean (~0.10). Both the physics and the on-water telegraph read
+// from this one function — if they disagreed, the game would be marking
+// faces it then refused to launch off.
+function localMaxSlope(x, t, reach = 152) {
+  // fixed 20px resolution rather than a fixed sample count: the opening swell
+  // has a ~627px wavelength, and a handful of samples spread across a wide
+  // span skips straight over the peak (and can report a crest the fish will
+  // never touch), which made ramp quality jump around between calls
+  let m = RAMP_MIN_SLOPE;
+  for (let d = -reach; d <= reach; d += 20) m = Math.max(m, surfaceAt(x + d, t).slope);
+  return m;
+}
+function rampQuality(slope, localMax) {
+  return clamp((slope - RAMP_MIN_SLOPE) / Math.max(1e-4, localMax - RAMP_MIN_SLOPE), 0, 1)
+       * clamp(localMax / RAMP_FULL_SLOPE, RAMP_CALM_FLOOR, 1);
+}
 function seaStateAt(x) {
   const r = roughAt(x);
   let best = SEA_STATES[0];
@@ -1155,7 +1200,7 @@ const run = {
   flip: null, flipQueue: 0, tricks: 0,   // tap-triggered backflip trick
   nearMisses: 0,
   pearls: 0, freeBoostT: 0,
-  bigAir: 0, missionsCompleted: [],
+  bigAir: 0, ramps: 0, rampQ: 0, missionsCompleted: [],
   seaState: '', seaRough: 0,
 };
 const COMBO_TIER = 4;    // clean skips per multiplier step
@@ -1499,7 +1544,7 @@ function startRun() {
   pearls = []; nextPearlX = 3000;
   chilis = []; nextChiliX = 4200;
   run.nearMisses = 0; run.pearls = 0; run.freeBoostT = 0;
-  run.bigAir = 0; run.missionsCompleted = [];
+  run.bigAir = 0; run.ramps = 0; run.rampQ = 0; run.missionsCompleted = [];
   run.seaState = ''; run.seaRough = 0;
   showScreen(null);
   hud(true);
@@ -1509,13 +1554,13 @@ function startRun() {
   } else if (Math.abs(wind.base) >= 25) {
     windHint = wind.dir > 0 ? ' 💨 Light tailwind.' : ' 💨 Light headwind.';
   }
-  setHint('Tap to toss your fish up!' + windHint);
+  setHint('Tap or press SPACE to toss your fish up!' + windHint);
 }
 function toss() {
   state = 'toss';
   run.vy = TOSS_VY;
   sfx.toss();
-  setHint('Tap to SWING when the fish drops through the ring! 🎯');
+  setHint('Tap / SPACE to SWING when the fish drops through the ring! 🎯');
 }
 function swing() {
   const st = stats();
@@ -1548,7 +1593,7 @@ function swing() {
     camShake = { amp: 6 + 10 * q, t: 0 };
     puff(BAT_X - 34, 44, 7, '#e0b95e', 170, 650, 3, 0.4);   // sand kicked up at the luchador's feet
   }
-  setHint('Hold to BOOST 🌶️, tap to flip 🌀 — golden snacks refill energy!');
+  setHint('Hold (or SPACE) to dive 🌶️ — aim for the gold wave faces to launch! Tap to flip 🌀');
 }
 function flop(msg) {
   popup(msg, run.x, run.y + 50, { size: 24, color: '#ffb0c8' });
@@ -1921,7 +1966,17 @@ function stepPhysics(dt) {
         // travel (s.slope < 0 means the surface descends as x increases) —
         // rewards aiming the boost-dive at a wave face instead of just
         // riding out whatever arc you happened to launch
-        const sweet = steep < SWEET_SKIP_STEEP && s.slope < -SWEET_SKIP_SLOPE && run.vx > 0;
+        // "Flatter than usual for this speed", measured against the angle a
+        // plain skim at this speed would naturally arrive at, rather than a
+        // fixed number. The absolute version had to be retuned every single
+        // time the lift or launch behaviour moved — three times so far — and
+        // each retune silently made the mechanic either unreachable or
+        // automatic in between. Deriving it from SKIM_LIFT keeps it correct
+        // by construction.
+        const naturalSteep = clamp(
+          SKIM_LIFT * Math.pow(clamp(speed / LAUNCH_BASE, 0, 1), SKIM_LIFT_FALLOFF) / Math.max(1, speed),
+          0.05, 1);
+        const sweet = steep < naturalSteep * SWEET_SKIP_REL && s.slope < -SWEET_SKIP_SLOPE && run.vx > 0;
         // touching down mid-rotation (not right at launch or right before
         // landing, where it barely reads as a flip) is treated the same as
         // a bad belly-flop — a flat penalty rather than the steep-scaled
@@ -1978,11 +2033,54 @@ function stepPhysics(dt) {
           // rebound with speed instead makes the arc fade out gradually as
           // the fish tires, which is the intended feel.
           const speedFrac = Math.pow(clamp(newSp / LAUNCH_BASE, 0, 1), SKIM_LIFT_FALLOFF);
-          // a plunging contact still gets much less back than a grazing one,
-          // so the belly-flop penalty and sweet-skip reward keep their meaning
-          const grazeFrac = 1 - clamp(steep, 0, 0.7) / 0.7 * 0.55;
+          // A plunging contact gets less back than a grazing one — but only
+          // moderately. At 0.55 depth this stacked with the separate
+          // belly-flop restitution penalty and, once ramps existed, turned
+          // every big launch into a dead chain: the high arc drops the fish
+          // in steeply, the steep arrival halved its rebound, and the next
+          // several hops degenerated into the 4px surface slide this lift
+          // exists to prevent. 0.32 keeps hard landings clearly worse without
+          // making a good launch self-defeating.
+          const grazeFrac = 1 - clamp(steep, 0, 0.7) / 0.7 * 0.32;
           const skimLift = SKIM_LIFT * speedFrac * grazeFrac;
           run.vy = Math.max(run.vy, skimLift, 55 + (newSp - need) * 0.05);
+
+          // Ramp launch. Hitting a RISING face throws the fish skyward, the
+          // way a ski jump does — this is the payoff the player aims their
+          // dive at. It can't come from the surface normal alone: ocean waves
+          // here top out around 1 degree early (max slope 0.017) and 6
+          // degrees far out, so the true normal redirects almost nothing.
+          // The face angle is amplified into a launch instead, and paid for
+          // out of forward speed — height costs velocity, so ramping is a
+          // real choice against staying low and fast (a sweet skip) rather
+          // than a free bonus.
+          // Quality is judged against the steepest face THIS stretch of ocean
+          // actually offers, not a fixed angle. A fixed target is what left
+          // both the sweet-skip threshold and the first cut of this mechanic
+          // dormant in calm water: early waves peak near 1 degree, so any
+          // constant tuned for open ocean simply never fires inshore. Sampling
+          // locally means "you hit the best face around" reads the same in a
+          // flat swell as in a maelstrom. Costs ~8 surfaceAt calls per bounce
+          // (a few dozen a second) against ~400 per frame for rendering.
+          const rampQ = rampQuality(s.slope, localMaxSlope(run.x, time));
+          if (rampQ > 0 && run.vx > 0 && steep < RAMP_MAX_STEEP && newSp > LAUNCH_BASE * RAMP_MIN_SPEED) {
+            const converted = newSp * rampQ * RAMP_GAIN * grazeFrac;
+            run.vy += converted;
+            // Precision is what makes height cheap. A well-aimed launch off a
+            // prime face keeps nearly all its forward speed; clipping a poor
+            // face bleeds it. A flat cost instead just made every launch shorten
+            // the run, which reads as a punishment for using the mechanic.
+            const costFrac = RAMP_COST * (1 - rampQ * 0.6);
+            run.vx = Math.max(40, run.vx - converted * costFrac);
+            run.rampQ = rampQ;
+            // count every launch worth the name; celebrate only the good ones
+            if (rampQ > RAMP_COUNT_Q) run.ramps++;
+            if (rampQ > RAMP_CHEER_Q) {
+              popup('¡Rampa! 🚀', run.x, run.y + 60, { size: 20, color: '#ffd93b' });
+              sparkle(run.x, s.y, '#ffd93b');
+              sfx.ramp(rampQ);
+            }
+          }
           if (time - run.lastBounceT > 0.09) {
             run.lastBounceT = time;
             run.skips++;
@@ -2930,24 +3028,64 @@ function drawSweetRing() {
 // faint shimmer over upcoming wave faces that would land a sweet skip,
 // so aiming the boost-dive at one is a readable choice rather than a
 // blind gamble — only shown while actually descending
-function drawSweetFaceTelegraph() {
-  if (REDUCED_MOTION || state !== 'fly' || run.vy >= 0) return;
-  const step = 20, endX = run.x + 600;
+// Marks the water ahead so the dive is an aimed decision rather than a
+// guess. Two different faces pay out two different ways, so they're coloured
+// apart: GOLD rising faces are ramps that trade speed for height, CYAN
+// descending faces are sweet skips that keep you low and fast. Shown while
+// descending or while actively diving, since those are the moments the
+// choice is live. Brightness tracks how good the face is.
+function drawFaceTelegraph() {
+  if (REDUCED_MOTION || state !== 'fly') return;
+  const diving = run.freeBoostT > 0 || (held && run.energy > 0);
+  if (run.vy >= 0 && !diving) return;
+  const step = 20, endX = run.x + 620;
+  // one window-wide sample feeds every marker below — ~31 extra surfaceAt
+  // calls a frame, against ~400 already spent on rendering, rather than
+  // re-sampling per marker. Centred on the drawn span so the faces marked are
+  // judged against the same water the player is looking at.
+  const winMax = localMaxSlope(run.x + 310, time, 310);
   ctx.save();
   ctx.lineWidth = 5;
   ctx.lineCap = 'round';
   for (let wx = run.x; wx < endX; wx += step) {
-    const mid = surfaceAt(wx, time);
-    if (mid.slope >= -SWEET_SKIP_SLOPE) continue;
     const sx = w2sx(wx);
     if (sx < -30 || sx > W + 30) continue;
+    const mid = surfaceAt(wx, time);
+    let col = null, strength = 0;
+    if (mid.slope > RAMP_MIN_SLOPE) {                      // rising = ramp
+      strength = rampQuality(mid.slope, winMax);
+      col = '255,217,59';
+    } else if (mid.slope < -SWEET_SKIP_SLOPE) {            // descending = sweet skip
+      strength = clamp(-mid.slope / 0.06, 0, 1);
+      col = '142,240,255';
+    }
+    if (!col) continue;
     const a = surfaceAt(wx - step * 0.5, time), b = surfaceAt(wx + step * 0.5, time);
-    const shimmer = 0.14 + 0.1 * Math.sin(time * 5 + wx * 0.02);
-    ctx.strokeStyle = `rgba(142,240,255,${shimmer.toFixed(3)})`;
+    const shimmer = (0.10 + 0.30 * strength) * (0.8 + 0.2 * Math.sin(time * 5 + wx * 0.02));
+    ctx.strokeStyle = `rgba(${col},${shimmer.toFixed(3)})`;
     ctx.beginPath();
     ctx.moveTo(w2sx(wx - step * 0.5), w2sy(a.y));
     ctx.lineTo(w2sx(wx + step * 0.5), w2sy(b.y));
     ctx.stroke();
+    // A tinted line lying on the water is nearly invisible in calm seas —
+    // the opening swell is only ~10px tall over a 600px wavelength, so the
+    // face it marks is a couple of degrees off horizontal. Strong ramps get
+    // a chevron floating above the surface instead, which reads as "jump
+    // here" regardless of how flat the water looks.
+    if (col === '255,217,59' && strength > 0.45) {
+      const cx = w2sx(wx), cy = w2sy(b.y) - 16 - 5 * Math.sin(time * 4 + wx * 0.01);
+      const sz = 5 + 4 * strength;
+      ctx.globalAlpha = clamp(0.30 + 0.55 * strength, 0, 0.9);
+      ctx.strokeStyle = 'rgba(255,217,59,1)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(cx - sz, cy + sz * 0.7);
+      ctx.lineTo(cx, cy - sz * 0.7);
+      ctx.lineTo(cx + sz, cy + sz * 0.7);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 5;
+    }
   }
   ctx.restore();
 }
@@ -3348,7 +3486,7 @@ function render() {
   drawLuchador();
   drawPicado();      // behind the action so the ring and fish stay readable
   drawSweetRing();
-  drawSweetFaceTelegraph();
+  drawFaceTelegraph();
   drawPowerLane();
   drawFoods();
   drawPearls();
@@ -3711,7 +3849,7 @@ window.OceanSkips = {
              combo: run.combo, comboBest: run.comboBest, mult: mult(), sweetSkips: run.sweetSkips,
              tricks: run.tricks, flip: run.flip ? { ...run.flip } : null, flipQueue: run.flipQueue,
              nearMisses: run.nearMisses, pearls: run.pearls, freeBoostT: run.freeBoostT,
-             bigAir: run.bigAir, seaState: run.seaState, missionsCompleted: run.missionsCompleted.map((m) => m.id) };
+             bigAir: run.bigAir, ramps: run.ramps, seaState: run.seaState, missionsCompleted: run.missionsCompleted.map((m) => m.id) };
   },
   startFlip: tryStartFlip,   // test-only: force a flip attempt regardless of tap timing
   get hazards() { return hazards.map(h => ({ ...h })); },
@@ -3754,7 +3892,9 @@ window.OceanSkips = {
   MISSIONS, checkMissions,   // exposed for mission tests
   get missions() { return save.missions.map((s) => ({ ...s, ...MISSIONS.find((m) => m.id === s.id) })); },
   setActiveMissions(ids) { save.missions = ids.map((id) => ({ id })); },   // test-only
-  SWEET_SKIP_SLOPE, SWEET_SKIP_STEEP, seaStateAt, SEA_STATES, LANE_Y, LANE_TOP,
+  SWEET_SKIP_SLOPE, SWEET_SKIP_REL, seaStateAt, SEA_STATES, LANE_Y, LANE_TOP,
+  localMaxSlope, rampQuality, RAMP_MIN_SLOPE, RAMP_FULL_SLOPE, RAMP_GAIN, RAMP_COST, RAMP_MAX_STEEP,
+  RAMP_COUNT_Q, RAMP_CHEER_Q, RAMP_CALM_FLOOR, RAMP_MIN_SPEED,
   runScore, medalFor, MEDALS, upgradeHasEffect,   // exposed for results/medal/economy tests
   setUpgrade(id, lvl) { if (id in save.up) save.up[id] = lvl; },   // test-only
   setRunStats(patch) { Object.assign(run, patch); },               // test-only

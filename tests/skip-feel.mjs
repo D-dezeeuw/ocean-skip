@@ -99,10 +99,15 @@ const run = await sampleRun();
 const chain = run.apexes.slice(1);
 check('a run produces a real skip chain', chain.length >= 6, `${chain.length} hops`);
 
-// REGRESSION: the collapse. Previously hop 4 was already ~3px.
+// REGRESSION: the collapse. Previously hop 4 was already ~3px and everything
+// after it was a ~2px slide. One flat bounce in the early chain is legitimate
+// — a big ramp launch drops the fish back in steeply, and a steep arrival is
+// deliberately penalised — so this allows a single dud while still failing on
+// the systematic collapse the mechanic exists to prevent.
 const earlyChain = chain.slice(0, 8);
-check('the first eight skips are all real arcs, not surface slides',
-  earlyChain.every((h) => h > 5), earlyChain.map((h) => h.toFixed(1)).join(', '));
+const slides = earlyChain.filter((h) => h <= 5).length;
+check('the early skip chain is real arcs, not a surface slide',
+  slides <= 1, `${slides} slides in ${earlyChain.map((h) => h.toFixed(1)).join(', ')}`);
 
 // REGRESSION: no cliff. Compare the settled part of the chain against its
 // start. Individual hops vary a lot with landing angle and wave phase, so
