@@ -181,6 +181,7 @@
   <span class="chip" id="hudFood">🟡 0</span>
   <span class="chip hidden" id="hudWind">💨 0</span>
   <span class="chip hidden combo" id="hudCombo">🔥 ×2</span>
+  <span class="chip hidden" id="hudPearls">🦪 0</span>
 </div>
 <div id="energy" class="hidden"><span>🌶️</span><div class="ebar"><i id="efill"></i></div></div>
 <div id="hint" class="hidden"></div>
@@ -321,7 +322,7 @@ const upCost = (lvl) => Math.round(20 * Math.pow(2.15, lvl) / 5) * 5;
 
 /* ---------- save data ---------- */
 const SAVE_KEY = 'oceanskips-save-v2';
-let save = { food: 0, best: 0, runs: 0, fish: 'chispa', muted: false,
+let save = { food: 0, best: 0, runs: 0, fish: 'chispa', muted: false, pearls: 0,
              up: { power: 0, slick: 0, rubber: 0, magnet: 0, chili: 0, sail: 0 } };
 try {
   const raw = localStorage.getItem(SAVE_KEY);
@@ -924,6 +925,7 @@ const run = {
   sweetSkips: 0,
   flip: null, flipQueue: 0, tricks: 0,   // tap-triggered backflip trick
   nearMisses: 0,
+  pearls: 0, freeBoostT: 0,
 };
 const COMBO_TIER = 4;    // clean skips per multiplier step
 const MULT_MAX = 4;      // caps the multiplier at 1 + MULT_MAX = x5
@@ -943,6 +945,10 @@ let foods = [];        // {x, baseY, taken, phase}
 let nextFoodX = 0;
 let hazards = [];       // {type:'buoy'|'gull', x, y?, vx?, phase, hit, missCredited}
 let nextHazardX = HAZARD_START_X;
+let pearls = [];        // {x, y, taken, phase} — rare, placed in risky spots
+let nextPearlX = 3000;
+let chilis = [];        // {x, y, taken, phase} — rare full-refill + free-boost pickup
+let nextChiliX = 4200;
 let particles = [];    // {x,y,vx,vy,life,maxLife,size,color,grav,kind?}
 let popups = [];       // {str,x,y,t,life,size,color} — floating canvas text
 let foamPatches = [];  // {x, born, size} — persistent surface foam left by skips
@@ -1043,6 +1049,47 @@ function hazardPos(hz, t) {
     return { x: hz.x, y: s.y + 16 + Math.sin(t * 1.6 + hz.phase) * 4 };
   }
   return { x: hz.x, y: hz.y + Math.sin(t * 2.4 + hz.phase) * 6 };
+}
+
+/* ---------- pearls: a sparse second currency tucked into risky spots —
+   high above a thermal, just past a hazard, or right on a crest tip —
+   so chasing one is a genuine choice, not a freebie ---------- */
+function spawnPearlsAhead() {
+  const horizon = cam.x + W * 2.2;
+  while (nextPearlX < horizon) {
+    const roll = Math.random();
+    let px = nextPearlX, py;
+    if (roll < 0.6) {                                        // high, near a thermal if one's close
+      const th = thermals.find((t) => Math.abs(t.x - nextPearlX) < 400);
+      if (th) px = th.x + rand(-50, 50);
+      py = BIG_AIR_Y + rand(60, 220);
+    } else if (roll < 0.85) {                                 // just past a hazard if one's close
+      const hz = hazards.find((h) => Math.abs(h.x - nextPearlX) < 500);
+      if (hz) px = hz.x + rand(90, 170);
+      py = rand(120, 260);
+    } else {                                                  // sitting right on a crest tip
+      let bestY = -Infinity, bestX = px;
+      for (let dx = -80; dx <= 80; dx += 16) {
+        const s = surfaceAt(px + dx, 0);
+        if (s.y > bestY) { bestY = s.y; bestX = px + dx; }
+      }
+      px = bestX; py = bestY + 44;
+    }
+    pearls.push({ x: px, y: py, taken: false, phase: rand(0, TAU) });
+    nextPearlX += rand(2000, 3000);
+  }
+  if (pearls.length > 60) pearls = pearls.filter((p) => p.x > cam.x - 600 && !p.taken);
+}
+
+/* ---------- chili pepper: rare full energy refill + a brief free boost
+   (no drain) — a breather, not a strategy, so it's spaced out generously */
+function spawnChilisAhead() {
+  const horizon = cam.x + W * 2.2;
+  while (nextChiliX < horizon) {
+    chilis.push({ x: nextChiliX, y: rand(80, 280), taken: false, phase: rand(0, TAU) });
+    nextChiliX += rand(3400, 4700);
+  }
+  if (chilis.length > 40) chilis = chilis.filter((c) => c.x > cam.x - 600 && !c.taken);
 }
 
 /* ---------- particles & popups ---------- */
@@ -1190,7 +1237,9 @@ function startRun() {
   foods = []; nextFoodX = 800; particles = []; popups = [];
   gustEvents = []; nextGustX = 1500; thermals = []; nextThermalX = 2200; gustBoostT = 0;
   hazards = []; nextHazardX = HAZARD_START_X;
-  run.nearMisses = 0;
+  pearls = []; nextPearlX = 3000;
+  chilis = []; nextChiliX = 4200;
+  run.nearMisses = 0; run.pearls = 0; run.freeBoostT = 0;
   showScreen(null);
   hud(true);
   let windHint = '';
@@ -1299,11 +1348,15 @@ function stepPhysics(dt) {
     // you come down, so you can choose where on the wave you land instead
     // of always riding out the same arc. Gated behind TAP_MS so a quick tap
     // (which triggers a flip instead, on release) doesn't also nibble energy.
-    if (held && run.energy > 0 && time - flyPressT >= TAP_MS) {
+    // A chili-pepper pickup grants a few seconds of the same boost for free
+    // (run.freeBoostT), no hold or energy required.
+    if (run.freeBoostT > 0) run.freeBoostT = Math.max(0, run.freeBoostT - dt);
+    const boosting = run.freeBoostT > 0 || (held && run.energy > 0 && time - flyPressT >= TAP_MS);
+    if (boosting) {
       const sp = Math.hypot(run.vx, run.vy) || 1;
       run.vx += (run.vx / sp) * BOOST_ACC * dt;
       run.vy += (run.vy / sp) * BOOST_ACC * dt - BOOST_DIVE * dt;
-      run.energy = Math.max(0, run.energy - BOOST_DRAIN * dt);
+      if (run.freeBoostT <= 0) run.energy = Math.max(0, run.energy - BOOST_DRAIN * dt);
       if (time - run.boostSfxT > 0.1) { sfx.boost(); run.boostSfxT = time; }
       // the flame itself is drawn (drawBoostFlame); just a few loose embers
       // kicking off it for extra spice
@@ -1436,6 +1489,34 @@ function stepPhysics(dt) {
         run.nearMisses++;
         popup('¡Cerquita! ✨', p.x, p.y + 30, { size: 18, color: '#8ef0ff' });
         sfx.nearMiss();
+      }
+    }
+
+    // pearls: direct-contact only, no magnet — finding one is the reward,
+    // not sweeping it up incidentally
+    for (const p of pearls) {
+      if (p.taken || Math.abs(p.x - run.x) > 200) continue;
+      const py = p.y + Math.sin(time * 2.2 + p.phase) * 5;
+      if (Math.hypot(p.x - run.x, py - run.y) < 24) {
+        p.taken = true;
+        save.pearls++; run.pearls++;
+        sparkle(p.x, py, '#cfe0ff');
+        popup('+1 🦪', p.x, py + 18, { size: 18, color: '#cfe0ff', life: 0.9 });
+        sfx.pearl();
+      }
+    }
+
+    // chili pepper: full energy refill + a few seconds of free boost
+    for (const c of chilis) {
+      if (c.taken || Math.abs(c.x - run.x) > 200) continue;
+      const cy = c.y + Math.sin(time * 2 + c.phase) * 6;
+      if (Math.hypot(c.x - run.x, cy - run.y) < 22) {
+        c.taken = true;
+        run.energy = run.maxEnergy;
+        run.freeBoostT = 1.2;
+        sparkle(c.x, cy, '#ff7a1a');
+        popup('🌶️ FULL BOOST!', c.x, cy + 20, { size: 20, color: '#ff9800' });
+        sfx.chiliPickup();
       }
     }
 
@@ -2315,7 +2396,8 @@ function drawFish() {
   ctx.rotate(ang);
 
   // boost flame, drawn behind the tail (local -x) before the body
-  if (state === 'fly' && held && run.energy > 0) drawBoostFlame(fishDef.size);
+  const isBoosting = state === 'fly' && (run.freeBoostT > 0 || (held && run.energy > 0));
+  if (isBoosting) drawBoostFlame(fishDef.size);
 
   // squash & stretch: modest stretch at speed, a sharp squash pulse right
   // after an impact (swing contact or a bounce) that eases out over ~0.12s
@@ -2337,7 +2419,7 @@ function drawFish() {
     nervous,
     blink: state === 'fly' && !nervous && isBlinking(fishDef.id.charCodeAt(0)),
     pupilA: foodDy != null ? clamp(foodDy / 140, -1, 1) * 0.5 : 0,
-    mouthOpen: state === 'fly' && ((held && run.energy > 0) || (foodDy != null && Math.abs(foodDy) < 60)),
+    mouthOpen: isBoosting || (state === 'fly' && foodDy != null && Math.abs(foodDy) < 60),
     speed,
     spikeExt: state === 'sink' ? 1 : clamp((speed - 900) / 1400, 0, 1),
   };
@@ -2699,6 +2781,51 @@ function drawHazards() {
   }
 }
 
+function drawPearls() {
+  for (const p of pearls) {
+    if (p.taken) continue;
+    const sx = w2sx(p.x);
+    if (sx < -30 || sx > W + 30) continue;
+    const sy = w2sy(p.y + Math.sin(time * 2.2 + p.phase) * 5);
+    const r = 9;
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(sx, sy, r + 8 + Math.sin(time * 3 + p.phase) * 2, 0, TAU); ctx.fill();
+    ctx.globalAlpha = 1;
+    const g = ctx.createRadialGradient(sx - 3, sy - 3, 1, sx, sy, r);
+    g.addColorStop(0, '#ffffff'); g.addColorStop(0.4, '#dff0ff');
+    g.addColorStop(0.72, '#c9a8ff'); g.addColorStop(1, '#8ec9ff');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(sx, sy, r, 0, TAU); ctx.fill();
+    ctx.strokeStyle = '#6a5acd'; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+}
+
+function drawChilis() {
+  for (const c of chilis) {
+    if (c.taken) continue;
+    const sx = w2sx(c.x);
+    if (sx < -30 || sx > W + 30) continue;
+    const sy = w2sy(c.y + Math.sin(time * 2 + c.phase) * 6);
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(Math.sin(time * 1.4 + c.phase) * 0.2);
+    ctx.fillStyle = 'rgba(255,90,40,0.25)';
+    ctx.beginPath(); ctx.arc(0, 0, 16 + Math.sin(time * 4 + c.phase) * 2, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#e63b1f'; ctx.strokeStyle = '#7a1f0d'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-2, -8);
+    ctx.quadraticCurveTo(10, -6, 9, 4);
+    ctx.quadraticCurveTo(6, 11, -3, 9);
+    ctx.quadraticCurveTo(-9, 4, -2, -8);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = '#2e8c4f'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-2, -8); ctx.lineTo(-5, -14); ctx.stroke();
+    ctx.lineCap = 'butt';
+    ctx.restore();
+  }
+}
+
 function drawParticles() {
   for (const p of particles) {
     const sx = w2sx(p.x), sy = w2sy(p.y);
@@ -2773,6 +2900,8 @@ function render() {
   drawSweetRing();
   drawSweetFaceTelegraph();
   drawFoods();
+  drawPearls();
+  drawChilis();
   drawHazards();
   drawFish();
   if (state === 'sink') drawSinkOverlay();
@@ -2808,6 +2937,9 @@ function updateHud() {
   const showCombo = state === 'fly' && m > 1;
   $('hudCombo').classList.toggle('hidden', !showCombo);
   if (showCombo) $('hudCombo').textContent = `🔥 ×${m}`;
+  const showPearls = run.pearls > 0;
+  $('hudPearls').classList.toggle('hidden', !showPearls);
+  if (showPearls) $('hudPearls').textContent = '🦪 ' + run.pearls;
 }
 
 /* ---------- menu / shop ---------- */
@@ -2853,7 +2985,7 @@ function windLabel() {
   return `STRONG ${dirWord} today 💨💨💨`;
 }
 function refreshMenuStats() {
-  $('menuStats').textContent = `🏆 best: ${save.best} m · 🟡 ${save.food} · runs: ${save.runs} · ${windLabel()}`;
+  $('menuStats').textContent = `🏆 best: ${save.best} m · 🟡 ${save.food} · 🦪 ${save.pearls} · runs: ${save.runs} · ${windLabel()}`;
 }
 function buildShop() {
   $('shopFood').textContent = `🟡 ${save.food} fish food`;
@@ -2982,6 +3114,8 @@ function frame(now) {
   spawnThermalsAhead();
   spawnHazardsAhead();
   stepHazards(dt);
+  spawnPearlsAhead();
+  spawnChilisAhead();
   stepBubbleColumns(dt);
   stepWindStreaks(dt);
   stepParticles(dt);
@@ -3002,7 +3136,7 @@ window.OceanSkips = {
              dist: run.dist, skips: run.skips, energy: run.energy,
              combo: run.combo, comboBest: run.comboBest, mult: mult(), sweetSkips: run.sweetSkips,
              tricks: run.tricks, flip: run.flip ? { ...run.flip } : null, flipQueue: run.flipQueue,
-             nearMisses: run.nearMisses };
+             nearMisses: run.nearMisses, pearls: run.pearls, freeBoostT: run.freeBoostT };
   },
   startFlip: tryStartFlip,   // test-only: force a flip attempt regardless of tap timing
   get hazards() { return hazards.map(h => ({ ...h })); },
@@ -3011,6 +3145,11 @@ window.OceanSkips = {
       ? { type: 'gull', x, y: 300, vx: -40, hit: false, missCredited: false, phase: 0 }
       : { type: 'buoy', x, hit: false, missCredited: false, phase: 0 });
   },
+  get pearls() { return pearls.map(p => ({ ...p })); },
+  get chilis() { return chilis.map(c => ({ ...c })); },
+  get savePearls() { return save.pearls; },
+  spawnPearl(x, y) { pearls.push({ x, y, taken: false, phase: 0 }); },   // test-only
+  spawnChili(x, y) { chilis.push({ x, y, taken: false, phase: 0 }); },   // test-only
   get view() {
     return { W, H, VS, DPR, seaLine: seaLine(), camX: cam.x, camY: cam.y,
              tossApex: TOSS_Y + 83 };
