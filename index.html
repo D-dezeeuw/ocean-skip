@@ -51,6 +51,7 @@
   }
   h1.logo .o2 { color: #ffd93b; }
   .tagline { color: #fff3d6; font-size: clamp(13px, 2.4vw, 18px); text-shadow: 0 2px 6px #04293a99; }
+  .missions { color: #fff3d6; font-size: 11.5px; text-shadow: 0 1px 4px #04293a99; line-height: 1.4; }
 
   .btn {
     font: inherit; font-size: 18px; font-weight: bold; color: #5a3a00;
@@ -196,6 +197,7 @@
 <div id="menu" class="screen">
   <h1 class="logo">Ocean<span class="o2">Skips</span></h1>
   <div class="tagline">Beach fiesta! Bat your fish clear across the ocean 🌊🎉</div>
+  <div class="missions" id="missionsPanel"></div>
   <div class="cards" id="fishCards"></div>
   <div class="rowbtns">
     <button class="btn" id="playBtn">Play! 🐟</button>
@@ -313,6 +315,72 @@ const FISH = [
     colors: { body: '#3d5a99', belly: '#dce6f5', fin: '#00c2d6' }, unlock: { type: 'pearls', n: 30 } },
 ];
 
+/* ---------- missions: single-run goals that give a session structure —
+   3 are active at once (save.missions), each an {id} pointing into this
+   pool; completing one grants its reward immediately and pulls in the
+   next unused pool entry (save.missionCursor), in pool order, so which
+   missions show up next is deterministic rather than randomly rerolled ---------- */
+const MISSIONS = [
+  { id: 'dist200',   text: 'Fly 200m in one run',            stat: 'dist',       target: 200, reward: { food: 20 } },
+  { id: 'dist400',   text: 'Fly 400m in one run',             stat: 'dist',       target: 400, reward: { food: 35 } },
+  { id: 'skips8',    text: 'Get 8 skips in one run',           stat: 'skips',      target: 8,   reward: { food: 20 } },
+  { id: 'skips15',   text: 'Get 15 skips in one run',          stat: 'skips',      target: 15,  reward: { food: 35 } },
+  { id: 'food10',    text: 'Collect 10 fish food in one run',  stat: 'food',       target: 10,  reward: { food: 15 } },
+  { id: 'trick1',    text: 'Land a backflip',                  stat: 'tricks',     target: 1,   reward: { food: 15 } },
+  { id: 'trick3',    text: 'Land 3 backflips in one run',      stat: 'tricks',     target: 3,   reward: { pearls: 1 } },
+  { id: 'nearmiss3', text: 'Get 3 near-misses in one run',     stat: 'nearMisses', target: 3,   reward: { food: 20 } },
+  { id: 'sweet3',    text: 'Land 3 sweet skips in one run',    stat: 'sweetSkips', target: 3,   reward: { food: 20 } },
+  { id: 'combo8',    text: 'Reach an 8-skip combo streak',     stat: 'comboBest',  target: 8,   reward: { pearls: 1 } },
+  { id: 'bigair2',   text: 'Score Big Air twice in one run',   stat: 'bigAir',     target: 2,   reward: { food: 25 } },
+  { id: 'pearl1',    text: 'Find a pearl',                     stat: 'pearls',     target: 1,   reward: { food: 15 } },
+];
+function missionStatValue(stat) {
+  switch (stat) {
+    case 'dist': return Math.round(run.dist / PX_PER_M);
+    case 'skips': return run.skips;
+    case 'food': return run.food;
+    case 'tricks': return run.tricks;
+    case 'nearMisses': return run.nearMisses;
+    case 'sweetSkips': return run.sweetSkips;
+    case 'comboBest': return run.comboBest;
+    case 'bigAir': return run.bigAir;
+    case 'pearls': return run.pearls;
+    default: return 0;
+  }
+}
+// picks the next pool entry in cursor order, skipping any id already active
+// in another slot — bounded by the pool size so it can't loop forever
+function nextMissionId() {
+  const activeIds = new Set(save.missions.map((m) => m.id));
+  for (let tries = 0; tries < MISSIONS.length; tries++) {
+    const cand = MISSIONS[save.missionCursor % MISSIONS.length];
+    save.missionCursor++;
+    if (!activeIds.has(cand.id)) return cand.id;
+  }
+  return MISSIONS[save.missionCursor % MISSIONS.length].id;
+}
+function ensureMissions() {
+  while (save.missions.length < 3) save.missions.push({ id: nextMissionId() });
+}
+// checked continuously during flight (and once more at endRun, to catch
+// the last instant before landing) — a completed mission pays out
+// immediately rather than waiting for results, and is swapped for a fresh
+// pool entry right away so a productive run can clear several in a row
+function checkMissions() {
+  for (let i = 0; i < save.missions.length; i++) {
+    const def = MISSIONS.find((m) => m.id === save.missions[i].id);
+    if (!def) continue;
+    if (missionStatValue(def.stat) >= def.target) {
+      if (def.reward.food) save.food += def.reward.food;
+      if (def.reward.pearls) save.pearls += def.reward.pearls;
+      run.missionsCompleted.push(def);
+      popup(`¡Misión! ${def.text} ✔`, run.x, run.y + 100, { size: 15, color: '#9ccc2e' });
+      sfx.mission();
+      save.missions[i] = { id: nextMissionId() };
+    }
+  }
+}
+
 /* ---------- upgrades ---------- */
 const UPGRADES = [
   { id: 'power',  icon: '💪', name: 'Super Swing', desc: '+8% launch power per level' },
@@ -332,7 +400,7 @@ const upCost = (lvl) => Math.round(20 * Math.pow(2.15, lvl) / 5) * 5;
 const SAVE_KEY = 'oceanskips-save-v3';
 const SAVE_KEY_V2 = 'oceanskips-save-v2';
 let save = { food: 0, best: 0, runs: 0, fish: 'chispa', muted: false, pearls: 0,
-             unlocked: { chispa: true },
+             unlocked: { chispa: true }, missions: [], missionCursor: 0,
              up: { power: 0, slick: 0, rubber: 0, magnet: 0, chili: 0, sail: 0 } };
 try {
   const raw = localStorage.getItem(SAVE_KEY);
@@ -353,6 +421,7 @@ try {
   }
 } catch (e) { /* file:// or private mode — play without persistence */ }
 function persist() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} }
+ensureMissions(); // guarantee 3 active slots whether this is a fresh save or one from before missions existed
 
 /* ---------- audio: tiny synth, zero assets ---------- */
 let actx = null;
@@ -453,6 +522,7 @@ const sfx = {
   pearl:   () => [1200, 1600, 2000].forEach((f, i) => tone(f, 0.09, { type: 'sine', vol: 0.09, delay: i * 0.04 })),
   chiliPickup: () => { tone(300, 0.2, { type: 'square', vol: 0.14, slide: 260 }); noiseBurst(900, 0.14, { vol: 0.1 }); },
   unlock:  () => [392, 523, 659, 784, 1047].forEach((f, i) => tone(f, 0.16, { type: 'square', vol: 0.11, delay: i * 0.08 })),
+  mission: () => [523, 784].forEach((f, i) => tone(f, 0.12, { type: 'triangle', vol: 0.1, delay: i * 0.06 })),
 };
 
 /* ---------- wind whoosh: continuous filtered noise, gain AND pitch track
@@ -951,6 +1021,7 @@ const run = {
   flip: null, flipQueue: 0, tricks: 0,   // tap-triggered backflip trick
   nearMisses: 0,
   pearls: 0, freeBoostT: 0,
+  bigAir: 0, missionsCompleted: [],
 };
 const COMBO_TIER = 4;    // clean skips per multiplier step
 const MULT_MAX = 4;      // caps the multiplier at 1 + MULT_MAX = x5
@@ -964,7 +1035,6 @@ function breakCombo(x, y) {
   sfx.comboBreak();
 }
 const BIG_AIR_Y = 260; // world y a hop's apex must clear to score Big Air
-let bigAirCount = 0; // debug/test counter, not shown in-game
 
 let foods = [];        // {x, baseY, taken, phase}
 let nextFoodX = 0;
@@ -1266,6 +1336,7 @@ function startRun() {
   pearls = []; nextPearlX = 3000;
   chilis = []; nextChiliX = 4200;
   run.nearMisses = 0; run.pearls = 0; run.freeBoostT = 0;
+  run.bigAir = 0; run.missionsCompleted = [];
   showScreen(null);
   hud(true);
   let windHint = '';
@@ -1348,6 +1419,7 @@ function endRun() {
   state = 'done';
   hud(false);
   save.runs++;
+  checkMissions(); // one more pass, catching the last instant before landing
   const m = Math.round(run.dist / PX_PER_M);
   const isBest = m > save.best;
   if (isBest) save.best = m;
@@ -1360,7 +1432,8 @@ function endRun() {
   document.getElementById('resLine').textContent =
     `${run.skips} skip${run.skips === 1 ? '' : 's'} · 🟡 ${run.food} fish food` +
     (run.dist > OPEN_OCEAN ? ' · you reached the open ocean! 🌑🌊' : '') +
-    (newlyUnlocked.length ? ` · ¡Nuevo pez! ${newlyUnlocked.map((f) => f.name).join(', ')} 🐟✨` : '');
+    (newlyUnlocked.length ? ` · ¡Nuevo pez! ${newlyUnlocked.map((f) => f.name).join(', ')} 🐟✨` : '') +
+    (run.missionsCompleted.length ? ` · ✔ ${run.missionsCompleted.map((mm) => mm.text).join(', ')}` : '');
   showScreen('results');
   if (newlyUnlocked.length) sfx.unlock();
   else if (isBest && m > 0) sfx.best();
@@ -1613,7 +1686,7 @@ function stepPhysics(dt) {
         if (run.hopApex > BIG_AIR_Y) {
           const bonus = clamp(Math.round((run.hopApex - BIG_AIR_Y) / 45), 1, 6) * mult();
           run.food += bonus; save.food += bonus;
-          bigAirCount++;
+          run.bigAir++;
           popup(`Big Air! +${bonus}🟡`, run.x, run.hopApex, { size: 22, color: '#ffd93b' });
           sfx.collect();
         }
@@ -1649,6 +1722,8 @@ function stepPhysics(dt) {
         run.y = s.y + 0.5; // riding up the back of a wave
       }
     }
+
+    checkMissions();
   }
 
   if (state === 'sink') {
@@ -2994,7 +3069,16 @@ function unlockReqText(f) {
   if (u.type === 'pearls') return '';
   return '';
 }
+function renderMissionsPanel() {
+  ensureMissions();
+  $('missionsPanel').innerHTML = save.missions
+    .map((slot) => MISSIONS.find((m) => m.id === slot.id))
+    .filter(Boolean)
+    .map((def) => `<div>🎯 ${def.text}</div>`)
+    .join('');
+}
 function buildMenu() {
+  renderMissionsPanel();
   const wrap = $('fishCards');
   wrap.innerHTML = '';
   for (const f of FISH) {
@@ -3217,7 +3301,8 @@ window.OceanSkips = {
              dist: run.dist, skips: run.skips, energy: run.energy,
              combo: run.combo, comboBest: run.comboBest, mult: mult(), sweetSkips: run.sweetSkips,
              tricks: run.tricks, flip: run.flip ? { ...run.flip } : null, flipQueue: run.flipQueue,
-             nearMisses: run.nearMisses, pearls: run.pearls, freeBoostT: run.freeBoostT };
+             nearMisses: run.nearMisses, pearls: run.pearls, freeBoostT: run.freeBoostT,
+             bigAir: run.bigAir, missionsCompleted: run.missionsCompleted.map((m) => m.id) };
   },
   startFlip: tryStartFlip,   // test-only: force a flip attempt regardless of tap timing
   get hazards() { return hazards.map(h => ({ ...h })); },
@@ -3246,7 +3331,7 @@ window.OceanSkips = {
   get flightEvents() {
     return { gustEvents: gustEvents.map(g => ({ ...g })), thermals: thermals.map(t => ({ ...t })), gustBoostT };
   },
-  get bigAirCount() { return bigAirCount; },
+  get bigAirCount() { return run.bigAir; },   // session-scoped since points-11/12 moved it onto run
   get particleCount() { return particles.length; },
   quality, updateQualityScaler, PARTICLE_CAP, REDUCED_MOTION, windLabel,   // exposed for perf/meta tests
   get audioLog() { return audioLog.slice(); },
@@ -3257,6 +3342,8 @@ window.OceanSkips = {
   get save() { return JSON.parse(JSON.stringify(save)); },   // exposed for save-migration tests
   get fishList() { return FISH.map((f) => ({ id: f.id, unlock: { ...f.unlock } })); },
   grantPearls(n) { save.pearls += n; persist(); },   // test/debug helper
+  MISSIONS, checkMissions,   // exposed for mission tests
+  setActiveMissions(ids) { save.missions = ids.map((id) => ({ id })); },   // test-only
 };
 
 /* ---------- cache-busting service worker ---------- */
