@@ -86,6 +86,33 @@ check('hard level-9 crests vary noticeably in the real game (genuine irregularit
 check('hard-level irregularity is far more pronounced than calm-level in the real game',
   result.hardCV > result.easyCV * 10, `easy=${result.easyCV} hard=${result.hardCV}`);
 
+// REGRESSION: the sweet-skip mechanic requires a descending wave face
+// steeper than SWEET_SKIP_SLOPE. That threshold was 0.05, which NO wave in
+// the opening stretch of a run ever reaches (they top out around 0.017-0.043)
+// — so the entire mechanic was unreachable in the part of the ocean players
+// actually spend their time in, and fired zero times across six real runs.
+// The early ocean must contain qualifying faces at the shipped threshold.
+{
+  const sweep = await page.evaluate(() => {
+    const S = window.OceanSkips;
+    const th = S.SWEET_SKIP_SLOPE;
+    const band = (x0, x1) => {
+      let qualify = 0, total = 0;
+      for (let x = x0; x < x1; x += 5) { total++; if (S.surfaceAt(x, 0).slope < -th) qualify++; }
+      return qualify / total;
+    };
+    // 0-150m is where a typical ~100m run actually happens
+    return { threshold: th, early: band(0, 6000), mid: band(6000, 16000), deep: band(100000, 106000) };
+  });
+  check('the shipped sweet-skip threshold is reachable in the opening 150m',
+    sweep.early > 0.05, `threshold=${sweep.threshold} qualifying=${(sweep.early * 100).toFixed(1)}%`);
+  check('sweet-skip faces stay a meaningful minority early (not free on every landing)',
+    sweep.early < 0.45, `qualifying=${(sweep.early * 100).toFixed(1)}%`);
+  check('sweet-skip faces remain available further out',
+    sweep.mid > 0.05 && sweep.deep > 0.05,
+    `mid=${(sweep.mid * 100).toFixed(1)}% deep=${(sweep.deep * 100).toFixed(1)}%`);
+}
+
 check('no console/page errors', errors.length === 0, errors.join(' | '));
 
 await browser.close();

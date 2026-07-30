@@ -9,7 +9,7 @@
 //
 // Bump CACHE_VERSION whenever index.html changes — activate() deletes
 // every cache that doesn't match the new name, so old bytes never linger.
-const CACHE_VERSION = 'v12';
+const CACHE_VERSION = 'v13';
 const CACHE_NAME = `oceanskips-${CACHE_VERSION}`;
 
 self.addEventListener('install', () => self.skipWaiting());

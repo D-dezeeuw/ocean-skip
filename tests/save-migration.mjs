@@ -106,6 +106,53 @@ await page.waitForTimeout(300);
     `before=${before.pearls} after=${after.pearls}`);
 }
 
+// --- a v3 save whose nested objects predate newer fields must have those
+// fields back-filled from defaults, not left undefined. `n > undefined` is
+// false, so an un-merged record key would silently never fire again. ---
+await page.evaluate(() => {
+  localStorage.setItem('oceanskips-save-v3', JSON.stringify({
+    food: 50, best: 100, runs: 3, fish: 'chispa', pearls: 0,
+    unlocked: { chispa: true },
+    records: { skips: 7 },            // partial: every other record key missing
+    missions: [{ id: 'skips8' }],
+    up: { power: 1 },                 // partial: other upgrade keys missing
+  }));
+});
+await page.reload();
+await page.waitForTimeout(300);
+{
+  const save = await page.evaluate(() => window.OceanSkips.save);
+  check('a partial records object keeps its stored value', save.records.skips === 7, JSON.stringify(save.records));
+  for (const k of ['tricks', 'sweetSkips', 'nearMisses', 'comboBest', 'bigAir']) {
+    check(`missing record "${k}" is back-filled to 0, not undefined`,
+      save.records[k] === 0, `${k}=${save.records[k]}`);
+  }
+  for (const k of ['slick', 'rubber', 'magnet', 'chili', 'sail']) {
+    check(`missing upgrade "${k}" is back-filled to 0`, save.up[k] === 0, `${k}=${save.up[k]}`);
+  }
+  check('a partial missions array is topped back up to 3 slots',
+    save.missions.length === 3, JSON.stringify(save.missions));
+}
+
+// --- a save holding a mission id that no longer exists in the pool must
+// have it dropped and replaced, not left as a slot that can never complete ---
+await page.evaluate(() => {
+  const s = JSON.parse(localStorage.getItem('oceanskips-save-v3'));
+  s.missions = [{ id: 'this_mission_was_deleted' }, { id: 'skips8' }];
+  localStorage.setItem('oceanskips-save-v3', JSON.stringify(s));
+});
+await page.reload();
+await page.waitForTimeout(300);
+{
+  const save = await page.evaluate(() => window.OceanSkips.save);
+  const ids = save.missions.map((m) => m.id);
+  check('a stale mission id is dropped on load', !ids.includes('this_mission_was_deleted'), JSON.stringify(ids));
+  check('the surviving valid mission is kept', ids.includes('skips8'), JSON.stringify(ids));
+  check('slots are refilled to 3 after dropping a stale id', save.missions.length === 3, JSON.stringify(ids));
+  const live = await page.evaluate(() => window.OceanSkips.missions.filter((m) => m.text).length);
+  check('all 3 active slots resolve to a real mission definition', live === 3, `resolved=${live}`);
+}
+
 check('no console/page errors', errors.length === 0, errors.join(' | '));
 
 await browser.close();

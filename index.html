@@ -124,6 +124,7 @@
     font-size: 14px; text-shadow: 0 1px 2px #000a; white-space: nowrap; }
   .chip small { opacity: .75; font-size: 10px; }
   .chip.combo { background: linear-gradient(90deg, #ff9800, #d81b74); animation: pulse .5s infinite alternate; }
+  .chip.windlit { background: #1c6d8fcc; box-shadow: 0 0 0 2px #8ef0ff88; }
   #hint {
     position: fixed; top: calc(52px + env(safe-area-inset-top)); left: 0; right: 0;
     text-align: center; z-index: 5; color: #fff3d6; font-size: clamp(13px, 2.4vw, 16px);
@@ -158,6 +159,11 @@
   .breakdown .row:last-child { border-bottom: 0; }
   .breakdown .row b { color: #b3125c; white-space: nowrap; }
   .breakdown .newrecord { color: #d9820b; font-weight: bold; font-size: 10px; margin-left: 5px; }
+  .breakdown .row small { opacity: .55; font-size: 9.5px; font-weight: normal; }
+  .breakdown .scoretotal { border-top: 2px solid #d81b74; border-bottom: 0; margin-top: 2px; padding-top: 4px; }
+  .breakdown .scoretotal b { font-size: 15px; }
+  .breakdown .subhead { font-size: 10px; color: #97a; text-transform: uppercase;
+    letter-spacing: .5px; margin: 6px 0 1px; }
   @keyframes rowIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
   .rowbtns { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
 
@@ -215,6 +221,7 @@
   <div class="rowbtns">
     <button class="btn" id="playBtn">Play! 🐟</button>
     <button class="btn pink" id="shopBtn">Shop 🛠️</button>
+    <button class="btn" id="recordsBtn">Records 🏆</button>
   </div>
   <div class="tagline" id="menuStats"></div>
 </div>
@@ -227,6 +234,16 @@
     <div id="upRows"></div>
     <br>
     <button class="btn pink" id="shopBack">Back</button>
+  </div>
+</div>
+
+<!-- ---------- RECORDS ---------- -->
+<div id="records" class="screen hidden">
+  <div class="panel">
+    <h2>Records 🏆</h2>
+    <div id="recRows" class="breakdown"></div>
+    <br>
+    <button class="btn pink" id="recBack">Back</button>
   </div>
 </div>
 
@@ -283,7 +300,13 @@ const TRAIL_MAX = 22;           // motion-trail ribbon: max sampled points
 const TRAIL_DT = 0.018;         // seconds between trail samples (~55/s, not every physics tick)
 const SPEED_LINES_MIN = 1600;   // px/s above which speed-line streaks appear
 const SWEET_SKIP_STEEP = 0.28;  // contact must be this grazing (0=flat, 1=vertical) or shallower
-const SWEET_SKIP_SLOPE = 0.05;  // minimum downslope magnitude (s.slope) to count as a real wave face
+// Minimum downslope magnitude (s.slope) to count as a real descending face.
+// This is deliberately a small deadzone, not the skill gate — it only rules
+// out flat/rising water. The actual skill test is the grazing-contact check
+// (SWEET_SKIP_STEEP). It was 0.05, which no wave in the first ~600m of a run
+// ever reaches (they top out around 0.017-0.043), so the whole mechanic was
+// unreachable in the part of the ocean players actually spend their time in.
+const SWEET_SKIP_SLOPE = 0.012;
 const TAP_MS = 0.18;            // press+release faster than this in flight = a flip, not a boost hold
 const FLIP_DUR = 0.55;          // seconds for one full backflip rotation
 const FLIP_QUEUE_MAX = 1;       // extra flips that can be queued while one is mid-rotation
@@ -428,7 +451,14 @@ try {
   const raw = localStorage.getItem(SAVE_KEY);
   if (raw) {
     const s = JSON.parse(raw);
-    save = { ...save, ...s, up: { ...save.up, ...(s.up || {}) }, unlocked: { ...save.unlocked, ...(s.unlocked || {}) } };
+    // every nested object must be deep-merged over its defaults, not taken
+    // wholesale — a save written before a field existed would otherwise load
+    // that field as undefined, and `n > undefined` is false, so e.g. a newly
+    // added record would silently never fire again for existing players
+    save = { ...save, ...s,
+             up: { ...save.up, ...(s.up || {}) },
+             unlocked: { ...save.unlocked, ...(s.unlocked || {}) },
+             records: { ...save.records, ...(s.records || {}) } };
   } else {
     // first load under v3 — migrate an existing v2 save if there is one.
     // v2 had every fish free from the start, so grandfather in whichever
@@ -443,6 +473,11 @@ try {
   }
 } catch (e) { /* file:// or private mode — play without persistence */ }
 function persist() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} }
+// drop mission slots whose id no longer exists in the pool. Without this, a
+// removed/renamed MISSIONS entry leaves a slot that can never complete (its
+// def is never found) and never rotates out — but still counts toward the
+// 3-slot total, permanently starving the player of a live mission.
+save.missions = (save.missions || []).filter((slot) => MISSIONS.some((m) => m.id === slot.id));
 ensureMissions(); // guarantee 3 active slots whether this is a fresh save or one from before missions existed
 
 /* ---------- audio: tiny synth, zero assets ---------- */
@@ -544,6 +579,7 @@ const sfx = {
   pearl:   () => [1200, 1600, 2000].forEach((f, i) => tone(f, 0.09, { type: 'sine', vol: 0.09, delay: i * 0.04 })),
   chiliPickup: () => { tone(300, 0.2, { type: 'square', vol: 0.14, slide: 260 }); noiseBurst(900, 0.14, { vol: 0.1 }); },
   unlock:  () => [392, 523, 659, 784, 1047].forEach((f, i) => tone(f, 0.16, { type: 'square', vol: 0.11, delay: i * 0.08 })),
+  seaState: () => { tone(180, 0.5, { type: 'sine', vol: 0.09, slide: 40 }); noiseBurst(420, 0.45, { vol: 0.05, freqSlide: 160 }); },
   mission: () => [523, 784].forEach((f, i) => tone(f, 0.12, { type: 'triangle', vol: 0.1, delay: i * 0.06 })),
   medal:   () => [392, 523, 659, 880, 1047, 1319].forEach((f, i) => tone(f, 0.15, { type: 'square', vol: 0.1, delay: i * 0.07 })),
 };
@@ -721,6 +757,21 @@ const WAVE_LEVELS = [
     { a: 11, l: 430, s: 32 } ] },
 ];
 const REF_MAX_ROUGH = WAVE_LEVELS[WAVE_LEVELS.length - 1].rough;
+
+// WAVE_LEVELS entries carry hand-written names ("Easy swell" … "Maelstrom")
+// that nothing ever read. Naming the sea by its *roughness* rather than by
+// its level index is what makes them reachable: the discrete level table
+// doesn't start until 1000m and a typical run is ~100m, but roughAt() climbs
+// smoothly through the intro ramp, so a normal run genuinely crosses several
+// named sea states. Sorted once so the lookup is a simple nearest-match.
+const SEA_STATES = WAVE_LEVELS.map((l) => ({ name: l.name, rough: l.rough }))
+  .sort((a, b) => a.rough - b.rough);
+function seaStateAt(x) {
+  const r = roughAt(x);
+  let best = SEA_STATES[0];
+  for (const s of SEA_STATES) if (Math.abs(s.rough - r) < Math.abs(best.rough - r)) best = s;
+  return best;
+}
 
 // never let more than this many full wave periods fit across the current
 // viewport (W, world px) — some levels' hand-tuned wavelengths are short
@@ -1087,6 +1138,7 @@ const run = {
   nearMisses: 0,
   pearls: 0, freeBoostT: 0,
   bigAir: 0, missionsCompleted: [],
+  seaState: '', seaRough: 0,
 };
 const COMBO_TIER = 4;    // clean skips per multiplier step
 const MULT_MAX = 4;      // caps the multiplier at 1 + MULT_MAX = x5
@@ -1342,14 +1394,42 @@ const REDUCED_MOTION = !!(window.matchMedia && window.matchMedia('(prefers-reduc
 // them in reverse once headroom returns. Never touches gameplay-critical
 // rendering (fish, water contact, HUD).
 let smoothFrameMs = 16.7;
+// The thresholds are relative to the display's own healthy frame interval,
+// not absolute milliseconds. Absolute thresholds were a latent bug: on a
+// 60Hz vsync-locked display a *perfect* frame is 16.7ms, which sat above the
+// old 14ms restore cutoff and below the old 20ms drop cutoff — so once any
+// hitch dropped a layer it could never be restored for the rest of the
+// session, and a 30Hz-capped or power-saving device (33ms) stripped every
+// layer immediately no matter how much headroom it actually had.
+// frameBaseMs tracks the best sustained interval this device achieves:
+// adapts down quickly (a fast frame is proof of capability) and drifts up
+// only very slowly (so a genuinely slower display eventually re-baselines
+// instead of being punished forever).
+// frameBaseMs is the display's own refresh interval, measured as the fastest
+// frame seen during a short warmup and then held fixed. Measuring it (rather
+// than assuming 60Hz) is what makes a 30Hz-capped device read as healthy
+// instead of permanently degraded; freezing it (rather than letting it drift)
+// is what stops the scaler oscillating — a drifting baseline would chase the
+// very slowdown our own layers cause, restore them, and slow down again.
+let frameBaseMs = Infinity;      // resolved from observation during warmup
+let qualWarmup = 60;             // frames spent measuring the refresh interval
+const QUAL_DROP_RATIO = 1.35;    // sustained frames this much slower than baseline = we're dropping frames
+const QUAL_RESTORE_RATIO = 1.12; // back within this much of baseline = headroom to restore
 const quality = { causticsLayer2: true, rays: true, ambientBubbles: true };
 function updateQualityScaler(frameMs) {
-  smoothFrameMs = lerp(smoothFrameMs, clamp(frameMs, 0, 100), 0.1);
-  if (smoothFrameMs > 20) {
+  const ms = clamp(frameMs, 0, 100);
+  smoothFrameMs = lerp(smoothFrameMs, ms, 0.1);
+  if (qualWarmup > 0) {
+    // floor at 6ms so two coalesced rAF callbacks can't fake a 240Hz display
+    if (ms >= 6) frameBaseMs = Math.min(frameBaseMs, ms);
+    if (--qualWarmup === 0) frameBaseMs = clamp(isFinite(frameBaseMs) ? frameBaseMs : 16.7, 6, 40);
+    return; // don't judge quality until we know what "normal" is for this device
+  }
+  if (smoothFrameMs > frameBaseMs * QUAL_DROP_RATIO) {
     if (quality.causticsLayer2) quality.causticsLayer2 = false;
     else if (quality.rays) quality.rays = false;
     else if (quality.ambientBubbles) quality.ambientBubbles = false;
-  } else if (smoothFrameMs < 14) {
+  } else if (smoothFrameMs < frameBaseMs * QUAL_RESTORE_RATIO) {
     if (!quality.ambientBubbles) quality.ambientBubbles = true;
     else if (!quality.rays) quality.rays = true;
     else if (!quality.causticsLayer2) quality.causticsLayer2 = true;
@@ -1402,6 +1482,7 @@ function startRun() {
   chilis = []; nextChiliX = 4200;
   run.nearMisses = 0; run.pearls = 0; run.freeBoostT = 0;
   run.bigAir = 0; run.missionsCompleted = [];
+  run.seaState = ''; run.seaRough = 0;
   showScreen(null);
   hud(true);
   let windHint = '';
@@ -1484,8 +1565,14 @@ function checkUnlocks() {
 // run score = distance + weighted skill stats — skips and sweet skips are
 // common so they're worth less each; tricks and near-misses take real
 // risk, so they're worth more
+// Every skill stat the results screen shows must contribute, or the breakdown
+// is lying about what earned the medal. Big Air was displayed (and had its own
+// record and mission) but was silently worth nothing. Food and pearls are
+// currency rather than skill, so they're shown separately as "earned" instead
+// of being folded into the score.
 function runScore(m) {
-  return m + run.skips * 4 + run.tricks * 25 + run.sweetSkips * 10 + run.nearMisses * 15;
+  return m + run.skips * 4 + run.tricks * 25 + run.sweetSkips * 10
+           + run.nearMisses * 15 + run.bigAir * 12;
 }
 const MEDALS = [
   { id: 'gold', score: 900, c1: '#fff3b0', c2: '#e0a838', ribbon: '#d81b74' },
@@ -1562,19 +1649,30 @@ function endRun() {
   const bestMult = 1 + Math.min(MULT_MAX, Math.floor(run.comboBest / COMBO_TIER));
   const row = (label, value, record) =>
     `<div>${label}</div><b>${value}${record ? '<span class="newrecord">NEW RECORD</span>' : ''}</b>`;
-  const rows = [
-    ['Skips', `${run.skips} <small>(best combo ×${bestMult})</small>`, isNewRecord.skips || isNewRecord.comboBest],
-    ['Tricks', run.tricks, isNewRecord.tricks],
-    ['Sweet skips', run.sweetSkips, isNewRecord.sweetSkips],
-    ['Near-misses', run.nearMisses, isNewRecord.nearMisses],
-    ['Big Air', run.bigAir, isNewRecord.bigAir],
+  // scored rows carry their point value so the medal is self-explanatory;
+  // earned rows are currency and sit under their own heading
+  const scored = [
+    ['Distance', `${m} <small>×1</small>`, false],
+    ['Skips', `${run.skips} <small>×4 · best combo ×${bestMult}</small>`, isNewRecord.skips || isNewRecord.comboBest],
+    ['Tricks', `${run.tricks} <small>×25</small>`, isNewRecord.tricks],
+    ['Sweet skips', `${run.sweetSkips} <small>×10</small>`, isNewRecord.sweetSkips],
+    ['Near-misses', `${run.nearMisses} <small>×15</small>`, isNewRecord.nearMisses],
+    ['Big Air', `${run.bigAir} <small>×12</small>`, isNewRecord.bigAir],
+  ];
+  const earned = [
     ['Food', `🟡 ${run.food}`, false],
     ['Pearls', `🦪 ${run.pearls}`, false],
   ];
-  document.getElementById('resBreakdown').innerHTML = rows
-    .map(([label, value, record], i) =>
-      `<div class="row" style="animation-delay:${(i * 0.07).toFixed(2)}s">${row(label, value, record)}</div>`)
+  let i = 0;
+  const renderRows = (list) => list
+    .map(([label, value, record]) =>
+      `<div class="row" style="animation-delay:${(i++ * 0.06).toFixed(2)}s">${row(label, value, record)}</div>`)
     .join('');
+  document.getElementById('resBreakdown').innerHTML =
+    renderRows(scored) +
+    `<div class="row scoretotal" style="animation-delay:${(i++ * 0.06).toFixed(2)}s">${row('Score', score, false)}</div>` +
+    `<div class="subhead">Earned</div>` +
+    renderRows(earned);
 
   document.getElementById('resLine').textContent =
     (run.dist > OPEN_OCEAN ? 'You reached the open ocean! 🌑🌊 ' : '') +
@@ -1688,6 +1786,19 @@ function stepPhysics(dt) {
     // zone announcements
     if (run.zoneShown === 0 && run.x > 9000)  { run.zoneShown = 1; popup('~ Open Water ~', run.x, run.y + 90, { size: 26, color: '#dff6ff' }); }
     if (run.zoneShown === 1 && run.x > OPEN_OCEAN) { run.zoneShown = 2; popup('~ THE OPEN OCEAN! ~', run.x, run.y + 90, { size: 28, color: '#ffd93b' }); }
+
+    // sea-state announcements: name the water as it roughens, so the run
+    // reads as a journey through escalating seas rather than one flat pond.
+    // Only ever announced forward — the roughness curve is a sawtooth across
+    // cycles and we don't want "calmer now!" banners on the way back down.
+    {
+      const sea = seaStateAt(run.x);
+      if (sea.name !== run.seaState && sea.rough > run.seaRough) {
+        run.seaState = sea.name; run.seaRough = sea.rough;
+        popup(`~ ${sea.name} ~`, run.x, run.y + 120, { size: 22, color: '#dff6ff', life: 1.6 });
+        sfx.seaState();
+      }
+    }
 
     // food pickups (with magnet pull)
     for (const f of foods) {
@@ -1977,7 +2088,7 @@ function drawWindStreaks(pal) {
 function drawPicado() {
   // papel picado bunting — fiesta HQ decoration, fades as you fly out to sea;
   // semi-transparent during play so it never hides the ball game
-  const inMenu = state === 'menu' || state === 'shop' || state === 'done';
+  const inMenu = state === 'menu' || state === 'shop' || state === 'records' || state === 'done';
   const alpha = (inMenu ? 1 : 0.55) * clamp(1 - cam.x / 2600, 0, 1);
   if (alpha <= 0) return;
   ctx.globalAlpha = alpha;
@@ -2637,7 +2748,7 @@ function drawSpeedLines(speed, size) {
 }
 
 function drawFish() {
-  if (state === 'menu' || state === 'shop' || state === 'done') return;
+  if (state === 'menu' || state === 'shop' || state === 'records' || state === 'done') return;
   drawFishTrail();
   const speed = state === 'fly' ? Math.hypot(run.vx, run.vy) : 0;
   ctx.save();
@@ -2716,6 +2827,40 @@ function drawSinkOverlay() {
   g.addColorStop(1, `rgba(2,10,20,${0.55 * t})`);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
+}
+// The "power lane": four independent reward systems all key off roughly the
+// same altitude — full wind starts around shelterTopAt+WIND_RAMP (~230-280),
+// thermal lift peaks at MID_ALT (260), Big Air scores above BIG_AIR_Y (260),
+// and pearls spawn from BIG_AIR_Y+60 up. That is a deliberately designed
+// high-risk/high-reward band, and until now absolutely nothing drew it — the
+// game had no altitude readout at all, so "fly high" was folklore rather than
+// a readable decision. This draws the lower edge of the band and lights it up
+// while the fish is inside.
+const LANE_Y = BIG_AIR_Y;          // where the payoffs begin
+const LANE_TOP = BIG_AIR_Y + 220;  // past the thermal bell's useful spread
+function drawPowerLane() {
+  if (state !== 'fly' && state !== 'sink') return;
+  const yBot = w2sy(LANE_Y), yTop = w2sy(LANE_TOP);
+  if (yBot < -40 || yTop > H + 40) return;  // band entirely off-screen
+  const inLane = run.y >= LANE_Y;
+  ctx.save();
+  const g = ctx.createLinearGradient(0, yBot, 0, yTop);
+  const a = inLane ? 0.16 : 0.07;
+  g.addColorStop(0, `rgba(255,217,59,${a})`);
+  g.addColorStop(1, 'rgba(255,217,59,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, yTop, W, yBot - yTop);
+  ctx.strokeStyle = inLane ? 'rgba(255,217,59,0.75)' : 'rgba(255,217,59,0.32)';
+  ctx.lineWidth = inLane ? 2.5 : 1.5;
+  ctx.setLineDash([14, 10]);
+  // scroll the dashes with the world so the line reads as a fixed altitude
+  ctx.lineDashOffset = -cam.x * 0.5;
+  ctx.beginPath(); ctx.moveTo(0, yBot); ctx.lineTo(W, yBot); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font = `bold 11px 'Comic Sans MS', sans-serif`;
+  ctx.fillStyle = inLane ? 'rgba(255,217,59,0.95)' : 'rgba(255,217,59,0.5)';
+  ctx.fillText(inLane ? 'POWER LANE — wind + lift + big air' : 'POWER LANE', 10, yBot - 6);
+  ctx.restore();
 }
 function drawPauseOverlay() {
   ctx.fillStyle = 'rgba(4,20,35,0.55)';
@@ -3171,6 +3316,7 @@ function render() {
   drawPicado();      // behind the action so the ring and fish stay readable
   drawSweetRing();
   drawSweetFaceTelegraph();
+  drawPowerLane();
   drawFoods();
   drawPearls();
   drawChilis();
@@ -3183,7 +3329,7 @@ function render() {
 /* ---------- HUD / screens ---------- */
 const $ = (id) => document.getElementById(id);
 function showScreen(name) {
-  for (const id of ['menu', 'shop', 'results']) $(id).classList.toggle('hidden', id !== name);
+  for (const id of ['menu', 'shop', 'records', 'results']) $(id).classList.toggle('hidden', id !== name);
 }
 function hud(on) {
   $('hud').classList.toggle('hidden', !on);
@@ -3201,10 +3347,22 @@ function updateHud() {
   $('efill').style.width = (run.energy / run.maxEnergy * 100) + '%';
   // chili meter only matters once the fish is airborne
   $('energy').classList.toggle('hidden', state !== 'fly' && state !== 'sink');
-  const windKmh = Math.round(Math.abs(wind.base) * 3.6 / PX_PER_M);
+  // In flight this reads the wind the fish is ACTUALLY in — which varies with
+  // altitude (the shear profile shelters low skims), with gust fronts, and
+  // with distance. It used to always show wind.base, the day's constant, so
+  // it never moved during a run and taught the player nothing about the
+  // single largest force in the game. Outside flight it still shows the
+  // day's baseline, since there's no fish position to sample.
+  const liveWind = (state === 'fly') ? windAt(run.x, run.y, time) : wind.base * wind.dir;
+  const windKmh = Math.round(Math.abs(liveWind) * 3.6 / PX_PER_M);
   const showWind = Math.abs(wind.base) >= 25;
   $('hudWind').classList.toggle('hidden', !showWind);
-  if (showWind) $('hudWind').textContent = (wind.dir > 0 ? '💨→ ' : '💨← ') + windKmh;
+  if (showWind) {
+    $('hudWind').textContent = (liveWind >= 0 ? '💨→ ' : '💨← ') + windKmh;
+    // highlight when the fish is high enough to be catching most of it
+    $('hudWind').classList.toggle('windlit',
+      state === 'fly' && Math.abs(liveWind) > Math.abs(wind.base) * 0.6);
+  }
   const m = mult();
   const showCombo = state === 'fly' && m > 1;
   $('hudCombo').classList.toggle('hidden', !showCombo);
@@ -3305,6 +3463,20 @@ function windLabel() {
 function refreshMenuStats() {
   $('menuStats').textContent = `🏆 best: ${save.best} m · 🟡 ${save.food} · 🦪 ${save.pearls} · runs: ${save.runs} · ${windLabel()}`;
 }
+// Would buying the next level of `id` actually change anything for the
+// currently selected fish? Some derived stats are clamped — Globo's bounce
+// hits the 0.92 ceiling at Rubber Belly level 3, so levels 4 and 5 cost 2,035
+// food and do literally nothing while the pips still fill in. Rather than
+// special-case that one fish, compare the real stats() output before and
+// after a hypothetical purchase.
+function upgradeHasEffect(id) {
+  const before = stats();
+  const saved = save.up[id];
+  save.up[id] = saved + 1;
+  const after = stats();
+  save.up[id] = saved;
+  return Object.keys(after).some((k) => after[k] !== before[k]);
+}
 function buildShop() {
   $('shopFood').textContent = `🟡 ${save.food} fish food`;
   const rows = $('upRows');
@@ -3316,12 +3488,16 @@ function buildShop() {
     const pips = Array.from({ length: UP_MAX }, (_, i) => `<span class="pip${i < lvl ? ' on' : ''}"></span>`).join('');
     const maxed = lvl >= UP_MAX;
     const cost = upCost(lvl);
+    const capped = !maxed && !upgradeHasEffect(u.id);
+    const label = maxed ? 'MAX' : capped ? 'CAPPED' : '🟡 ' + cost;
     row.innerHTML = `
       <span style="font-size:20px">${u.icon}</span>
-      <div class="nm"><b>${u.name}</b><small>${u.desc}</small></div>
+      <div class="nm"><b>${u.name}</b><small>${capped
+        ? `Already maxed out for ${fishDef.name} — no further effect`
+        : u.desc}</small></div>
       <div class="pips">${pips}</div>
-      <button class="buy" ${maxed || save.food < cost ? 'disabled' : ''}>${maxed ? 'MAX' : '🟡 ' + cost}</button>`;
-    if (!maxed) {
+      <button class="buy" ${maxed || capped || save.food < cost ? 'disabled' : ''}>${label}</button>`;
+    if (!maxed && !capped) {
       row.querySelector('.buy').addEventListener('click', () => {
         if (save.food < cost) { sfx.nope(); return; }
         save.food -= cost; save.up[u.id]++;
@@ -3330,6 +3506,30 @@ function buildShop() {
     }
     rows.appendChild(row);
   }
+}
+
+/* ---------- records screen: save.records was tracked from the day it was
+   added but never displayed anywhere — it only decided whether to stamp
+   NEW RECORD on a results row, so you could beat your best trick count and
+   never learn what it actually was. ---------- */
+const RECORD_ROWS = [
+  ['🐟', 'Best distance', () => `${save.best} m`],
+  ['🌀', 'Most skips in a run', () => save.records.skips],
+  ['🔥', 'Longest combo streak', () => save.records.comboBest],
+  ['🤸', 'Most tricks in a run', () => save.records.tricks],
+  ['✨', 'Most sweet skips in a run', () => save.records.sweetSkips],
+  ['😮', 'Most near-misses in a run', () => save.records.nearMisses],
+  ['🚀', 'Most Big Air in a run', () => save.records.bigAir],
+  ['🦪', 'Pearls found', () => save.pearls],
+  ['🟡', 'Fish food banked', () => save.food],
+  ['🎣', 'Runs played', () => save.runs],
+];
+function buildRecords() {
+  $('recRows').innerHTML = RECORD_ROWS.map(([icon, label, get], i) => {
+    const v = get();
+    const dim = (v === 0 || v === '0 m') ? ' style="opacity:.45"' : '';
+    return `<div class="row"${dim} data-i="${i}"><div>${icon} ${label}</div><b>${v}</b></div>`;
+  }).join('');
 }
 
 /* ---------- input: one finger does everything — hold = boost, a quick
@@ -3400,6 +3600,8 @@ window.addEventListener('keyup', (e) => { if (e.code === 'Space' || e.code === '
 
 $('playBtn').addEventListener('click', () => { audio(); sfx.click(); startRun(); });
 $('shopBtn').addEventListener('click', () => { audio(); sfx.click(); state = 'shop'; buildShop(); showScreen('shop'); });
+$('recordsBtn').addEventListener('click', () => { audio(); sfx.click(); state = 'records'; buildRecords(); showScreen('records'); });
+$('recBack').addEventListener('click', () => { sfx.click(); state = 'menu'; refreshMenuStats(); showScreen('menu'); });
 $('shopBack').addEventListener('click', () => { sfx.click(); state = 'menu'; refreshMenuStats(); showScreen('menu'); });
 $('againBtn').addEventListener('click', () => { sfx.click(); startRun(); });
 $('menuBtn').addEventListener('click', () => { sfx.click(); state = 'menu'; buildMenu(); showScreen('menu'); });
@@ -3476,7 +3678,7 @@ window.OceanSkips = {
              combo: run.combo, comboBest: run.comboBest, mult: mult(), sweetSkips: run.sweetSkips,
              tricks: run.tricks, flip: run.flip ? { ...run.flip } : null, flipQueue: run.flipQueue,
              nearMisses: run.nearMisses, pearls: run.pearls, freeBoostT: run.freeBoostT,
-             bigAir: run.bigAir, missionsCompleted: run.missionsCompleted.map((m) => m.id) };
+             bigAir: run.bigAir, seaState: run.seaState, missionsCompleted: run.missionsCompleted.map((m) => m.id) };
   },
   startFlip: tryStartFlip,   // test-only: force a flip attempt regardless of tap timing
   get hazards() { return hazards.map(h => ({ ...h })); },
@@ -3519,7 +3721,10 @@ window.OceanSkips = {
   MISSIONS, checkMissions,   // exposed for mission tests
   get missions() { return save.missions.map((s) => ({ ...s, ...MISSIONS.find((m) => m.id === s.id) })); },
   setActiveMissions(ids) { save.missions = ids.map((id) => ({ id })); },   // test-only
-  runScore, medalFor, MEDALS,   // exposed for results/medal tests
+  SWEET_SKIP_SLOPE, SWEET_SKIP_STEEP, seaStateAt, SEA_STATES, LANE_Y, LANE_TOP,
+  runScore, medalFor, MEDALS, upgradeHasEffect,   // exposed for results/medal/economy tests
+  setUpgrade(id, lvl) { if (id in save.up) save.up[id] = lvl; },   // test-only
+  setRunStats(patch) { Object.assign(run, patch); },               // test-only
   get records() { return { ...save.records }; },
   get paused() { return paused; },
   togglePause,

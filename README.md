@@ -30,7 +30,11 @@ offline; designed for landscape mobile.
    hazard, on a crest tip — and are the currency locked fish cost.
 8. Three missions are always active (menu) for extra food/pearls; complete
    runs earn a bronze/silver/gold medal on the results screen.
-9. Spend food in the shop on permanent upgrades (localStorage save).
+9. Watch the **power lane** — the dashed gold line marks the altitude where
+   full wind, peak thermal lift, Big Air scoring and pearls all pay out.
+10. The sea is named as it roughens ("Easy swell" … "Maelstrom"), and the
+   Records screen tracks your bests across every skill stat.
+11. Spend food in the shop on permanent upgrades (localStorage save).
    ⏸ pauses mid-flight; 🎵 toggles the combo-reactive mariachi loop.
 
 ## Code layout (single file, sectioned)
@@ -42,7 +46,8 @@ hazards, pickups, sink) → rendering (fish/luchador art, hazards, pearls) →
 input → main loop (with pause/hitstop). All tuning constants sit in one
 block near the top of the script.
 
-See `implementation-15.md` for the most recent feature pass (higher-fidelity
+See `implementation-audit.md` for the most recent pass (audit fixes plus
+surfacing dormant simulation detail), `implementation-15.md` for the feature pass (higher-fidelity
 fish/luchador art, combo/tricks/hazards/pearls/missions, medals, pause, and
 the mariachi loop) and `implementation-20.md` for the wave/wind/audio pass
 before it.
