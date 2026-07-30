@@ -124,6 +124,7 @@
     font-size: 14px; text-shadow: 0 1px 2px #000a; white-space: nowrap; }
   .chip small { opacity: .75; font-size: 10px; }
   .chip.combo { background: linear-gradient(90deg, #ff9800, #d81b74); animation: pulse .5s infinite alternate; }
+  .chip.windlit { background: #1c6d8fcc; box-shadow: 0 0 0 2px #8ef0ff88; }
   #hint {
     position: fixed; top: calc(52px + env(safe-area-inset-top)); left: 0; right: 0;
     text-align: center; z-index: 5; color: #fff3d6; font-size: clamp(13px, 2.4vw, 16px);
@@ -158,6 +159,11 @@
   .breakdown .row:last-child { border-bottom: 0; }
   .breakdown .row b { color: #b3125c; white-space: nowrap; }
   .breakdown .newrecord { color: #d9820b; font-weight: bold; font-size: 10px; margin-left: 5px; }
+  .breakdown .row small { opacity: .55; font-size: 9.5px; font-weight: normal; }
+  .breakdown .scoretotal { border-top: 2px solid #d81b74; border-bottom: 0; margin-top: 2px; padding-top: 4px; }
+  .breakdown .scoretotal b { font-size: 15px; }
+  .breakdown .subhead { font-size: 10px; color: #97a; text-transform: uppercase;
+    letter-spacing: .5px; margin: 6px 0 1px; }
   @keyframes rowIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
   .rowbtns { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
 
@@ -283,7 +289,13 @@ const TRAIL_MAX = 22;           // motion-trail ribbon: max sampled points
 const TRAIL_DT = 0.018;         // seconds between trail samples (~55/s, not every physics tick)
 const SPEED_LINES_MIN = 1600;   // px/s above which speed-line streaks appear
 const SWEET_SKIP_STEEP = 0.28;  // contact must be this grazing (0=flat, 1=vertical) or shallower
-const SWEET_SKIP_SLOPE = 0.05;  // minimum downslope magnitude (s.slope) to count as a real wave face
+// Minimum downslope magnitude (s.slope) to count as a real descending face.
+// This is deliberately a small deadzone, not the skill gate — it only rules
+// out flat/rising water. The actual skill test is the grazing-contact check
+// (SWEET_SKIP_STEEP). It was 0.05, which no wave in the first ~600m of a run
+// ever reaches (they top out around 0.017-0.043), so the whole mechanic was
+// unreachable in the part of the ocean players actually spend their time in.
+const SWEET_SKIP_SLOPE = 0.012;
 const TAP_MS = 0.18;            // press+release faster than this in flight = a flip, not a boost hold
 const FLIP_DUR = 0.55;          // seconds for one full backflip rotation
 const FLIP_QUEUE_MAX = 1;       // extra flips that can be queued while one is mid-rotation
@@ -1524,8 +1536,14 @@ function checkUnlocks() {
 // run score = distance + weighted skill stats — skips and sweet skips are
 // common so they're worth less each; tricks and near-misses take real
 // risk, so they're worth more
+// Every skill stat the results screen shows must contribute, or the breakdown
+// is lying about what earned the medal. Big Air was displayed (and had its own
+// record and mission) but was silently worth nothing. Food and pearls are
+// currency rather than skill, so they're shown separately as "earned" instead
+// of being folded into the score.
 function runScore(m) {
-  return m + run.skips * 4 + run.tricks * 25 + run.sweetSkips * 10 + run.nearMisses * 15;
+  return m + run.skips * 4 + run.tricks * 25 + run.sweetSkips * 10
+           + run.nearMisses * 15 + run.bigAir * 12;
 }
 const MEDALS = [
   { id: 'gold', score: 900, c1: '#fff3b0', c2: '#e0a838', ribbon: '#d81b74' },
@@ -1602,19 +1620,30 @@ function endRun() {
   const bestMult = 1 + Math.min(MULT_MAX, Math.floor(run.comboBest / COMBO_TIER));
   const row = (label, value, record) =>
     `<div>${label}</div><b>${value}${record ? '<span class="newrecord">NEW RECORD</span>' : ''}</b>`;
-  const rows = [
-    ['Skips', `${run.skips} <small>(best combo ×${bestMult})</small>`, isNewRecord.skips || isNewRecord.comboBest],
-    ['Tricks', run.tricks, isNewRecord.tricks],
-    ['Sweet skips', run.sweetSkips, isNewRecord.sweetSkips],
-    ['Near-misses', run.nearMisses, isNewRecord.nearMisses],
-    ['Big Air', run.bigAir, isNewRecord.bigAir],
+  // scored rows carry their point value so the medal is self-explanatory;
+  // earned rows are currency and sit under their own heading
+  const scored = [
+    ['Distance', `${m} <small>×1</small>`, false],
+    ['Skips', `${run.skips} <small>×4 · best combo ×${bestMult}</small>`, isNewRecord.skips || isNewRecord.comboBest],
+    ['Tricks', `${run.tricks} <small>×25</small>`, isNewRecord.tricks],
+    ['Sweet skips', `${run.sweetSkips} <small>×10</small>`, isNewRecord.sweetSkips],
+    ['Near-misses', `${run.nearMisses} <small>×15</small>`, isNewRecord.nearMisses],
+    ['Big Air', `${run.bigAir} <small>×12</small>`, isNewRecord.bigAir],
+  ];
+  const earned = [
     ['Food', `🟡 ${run.food}`, false],
     ['Pearls', `🦪 ${run.pearls}`, false],
   ];
-  document.getElementById('resBreakdown').innerHTML = rows
-    .map(([label, value, record], i) =>
-      `<div class="row" style="animation-delay:${(i * 0.07).toFixed(2)}s">${row(label, value, record)}</div>`)
+  let i = 0;
+  const renderRows = (list) => list
+    .map(([label, value, record]) =>
+      `<div class="row" style="animation-delay:${(i++ * 0.06).toFixed(2)}s">${row(label, value, record)}</div>`)
     .join('');
+  document.getElementById('resBreakdown').innerHTML =
+    renderRows(scored) +
+    `<div class="row scoretotal" style="animation-delay:${(i++ * 0.06).toFixed(2)}s">${row('Score', score, false)}</div>` +
+    `<div class="subhead">Earned</div>` +
+    renderRows(earned);
 
   document.getElementById('resLine').textContent =
     (run.dist > OPEN_OCEAN ? 'You reached the open ocean! 🌑🌊 ' : '') +
@@ -3241,10 +3270,22 @@ function updateHud() {
   $('efill').style.width = (run.energy / run.maxEnergy * 100) + '%';
   // chili meter only matters once the fish is airborne
   $('energy').classList.toggle('hidden', state !== 'fly' && state !== 'sink');
-  const windKmh = Math.round(Math.abs(wind.base) * 3.6 / PX_PER_M);
+  // In flight this reads the wind the fish is ACTUALLY in — which varies with
+  // altitude (the shear profile shelters low skims), with gust fronts, and
+  // with distance. It used to always show wind.base, the day's constant, so
+  // it never moved during a run and taught the player nothing about the
+  // single largest force in the game. Outside flight it still shows the
+  // day's baseline, since there's no fish position to sample.
+  const liveWind = (state === 'fly') ? windAt(run.x, run.y, time) : wind.base * wind.dir;
+  const windKmh = Math.round(Math.abs(liveWind) * 3.6 / PX_PER_M);
   const showWind = Math.abs(wind.base) >= 25;
   $('hudWind').classList.toggle('hidden', !showWind);
-  if (showWind) $('hudWind').textContent = (wind.dir > 0 ? '💨→ ' : '💨← ') + windKmh;
+  if (showWind) {
+    $('hudWind').textContent = (liveWind >= 0 ? '💨→ ' : '💨← ') + windKmh;
+    // highlight when the fish is high enough to be catching most of it
+    $('hudWind').classList.toggle('windlit',
+      state === 'fly' && Math.abs(liveWind) > Math.abs(wind.base) * 0.6);
+  }
   const m = mult();
   const showCombo = state === 'fly' && m > 1;
   $('hudCombo').classList.toggle('hidden', !showCombo);
@@ -3345,6 +3386,20 @@ function windLabel() {
 function refreshMenuStats() {
   $('menuStats').textContent = `🏆 best: ${save.best} m · 🟡 ${save.food} · 🦪 ${save.pearls} · runs: ${save.runs} · ${windLabel()}`;
 }
+// Would buying the next level of `id` actually change anything for the
+// currently selected fish? Some derived stats are clamped — Globo's bounce
+// hits the 0.92 ceiling at Rubber Belly level 3, so levels 4 and 5 cost 2,035
+// food and do literally nothing while the pips still fill in. Rather than
+// special-case that one fish, compare the real stats() output before and
+// after a hypothetical purchase.
+function upgradeHasEffect(id) {
+  const before = stats();
+  const saved = save.up[id];
+  save.up[id] = saved + 1;
+  const after = stats();
+  save.up[id] = saved;
+  return Object.keys(after).some((k) => after[k] !== before[k]);
+}
 function buildShop() {
   $('shopFood').textContent = `🟡 ${save.food} fish food`;
   const rows = $('upRows');
@@ -3356,12 +3411,16 @@ function buildShop() {
     const pips = Array.from({ length: UP_MAX }, (_, i) => `<span class="pip${i < lvl ? ' on' : ''}"></span>`).join('');
     const maxed = lvl >= UP_MAX;
     const cost = upCost(lvl);
+    const capped = !maxed && !upgradeHasEffect(u.id);
+    const label = maxed ? 'MAX' : capped ? 'CAPPED' : '🟡 ' + cost;
     row.innerHTML = `
       <span style="font-size:20px">${u.icon}</span>
-      <div class="nm"><b>${u.name}</b><small>${u.desc}</small></div>
+      <div class="nm"><b>${u.name}</b><small>${capped
+        ? `Already maxed out for ${fishDef.name} — no further effect`
+        : u.desc}</small></div>
       <div class="pips">${pips}</div>
-      <button class="buy" ${maxed || save.food < cost ? 'disabled' : ''}>${maxed ? 'MAX' : '🟡 ' + cost}</button>`;
-    if (!maxed) {
+      <button class="buy" ${maxed || capped || save.food < cost ? 'disabled' : ''}>${label}</button>`;
+    if (!maxed && !capped) {
       row.querySelector('.buy').addEventListener('click', () => {
         if (save.food < cost) { sfx.nope(); return; }
         save.food -= cost; save.up[u.id]++;
@@ -3559,7 +3618,10 @@ window.OceanSkips = {
   MISSIONS, checkMissions,   // exposed for mission tests
   get missions() { return save.missions.map((s) => ({ ...s, ...MISSIONS.find((m) => m.id === s.id) })); },
   setActiveMissions(ids) { save.missions = ids.map((id) => ({ id })); },   // test-only
-  runScore, medalFor, MEDALS,   // exposed for results/medal tests
+  SWEET_SKIP_SLOPE, SWEET_SKIP_STEEP,
+  runScore, medalFor, MEDALS, upgradeHasEffect,   // exposed for results/medal/economy tests
+  setUpgrade(id, lvl) { if (id in save.up) save.up[id] = lvl; },   // test-only
+  setRunStats(patch) { Object.assign(run, patch); },               // test-only
   get records() { return { ...save.records }; },
   get paused() { return paused; },
   togglePause,
