@@ -221,6 +221,7 @@
   <div class="rowbtns">
     <button class="btn" id="playBtn">Play! 🐟</button>
     <button class="btn pink" id="shopBtn">Shop 🛠️</button>
+    <button class="btn" id="recordsBtn">Records 🏆</button>
   </div>
   <div class="tagline" id="menuStats"></div>
 </div>
@@ -233,6 +234,16 @@
     <div id="upRows"></div>
     <br>
     <button class="btn pink" id="shopBack">Back</button>
+  </div>
+</div>
+
+<!-- ---------- RECORDS ---------- -->
+<div id="records" class="screen hidden">
+  <div class="panel">
+    <h2>Records 🏆</h2>
+    <div id="recRows" class="breakdown"></div>
+    <br>
+    <button class="btn pink" id="recBack">Back</button>
   </div>
 </div>
 
@@ -568,6 +579,7 @@ const sfx = {
   pearl:   () => [1200, 1600, 2000].forEach((f, i) => tone(f, 0.09, { type: 'sine', vol: 0.09, delay: i * 0.04 })),
   chiliPickup: () => { tone(300, 0.2, { type: 'square', vol: 0.14, slide: 260 }); noiseBurst(900, 0.14, { vol: 0.1 }); },
   unlock:  () => [392, 523, 659, 784, 1047].forEach((f, i) => tone(f, 0.16, { type: 'square', vol: 0.11, delay: i * 0.08 })),
+  seaState: () => { tone(180, 0.5, { type: 'sine', vol: 0.09, slide: 40 }); noiseBurst(420, 0.45, { vol: 0.05, freqSlide: 160 }); },
   mission: () => [523, 784].forEach((f, i) => tone(f, 0.12, { type: 'triangle', vol: 0.1, delay: i * 0.06 })),
   medal:   () => [392, 523, 659, 880, 1047, 1319].forEach((f, i) => tone(f, 0.15, { type: 'square', vol: 0.1, delay: i * 0.07 })),
 };
@@ -745,6 +757,21 @@ const WAVE_LEVELS = [
     { a: 11, l: 430, s: 32 } ] },
 ];
 const REF_MAX_ROUGH = WAVE_LEVELS[WAVE_LEVELS.length - 1].rough;
+
+// WAVE_LEVELS entries carry hand-written names ("Easy swell" … "Maelstrom")
+// that nothing ever read. Naming the sea by its *roughness* rather than by
+// its level index is what makes them reachable: the discrete level table
+// doesn't start until 1000m and a typical run is ~100m, but roughAt() climbs
+// smoothly through the intro ramp, so a normal run genuinely crosses several
+// named sea states. Sorted once so the lookup is a simple nearest-match.
+const SEA_STATES = WAVE_LEVELS.map((l) => ({ name: l.name, rough: l.rough }))
+  .sort((a, b) => a.rough - b.rough);
+function seaStateAt(x) {
+  const r = roughAt(x);
+  let best = SEA_STATES[0];
+  for (const s of SEA_STATES) if (Math.abs(s.rough - r) < Math.abs(best.rough - r)) best = s;
+  return best;
+}
 
 // never let more than this many full wave periods fit across the current
 // viewport (W, world px) — some levels' hand-tuned wavelengths are short
@@ -1111,6 +1138,7 @@ const run = {
   nearMisses: 0,
   pearls: 0, freeBoostT: 0,
   bigAir: 0, missionsCompleted: [],
+  seaState: '', seaRough: 0,
 };
 const COMBO_TIER = 4;    // clean skips per multiplier step
 const MULT_MAX = 4;      // caps the multiplier at 1 + MULT_MAX = x5
@@ -1454,6 +1482,7 @@ function startRun() {
   chilis = []; nextChiliX = 4200;
   run.nearMisses = 0; run.pearls = 0; run.freeBoostT = 0;
   run.bigAir = 0; run.missionsCompleted = [];
+  run.seaState = ''; run.seaRough = 0;
   showScreen(null);
   hud(true);
   let windHint = '';
@@ -1758,6 +1787,19 @@ function stepPhysics(dt) {
     if (run.zoneShown === 0 && run.x > 9000)  { run.zoneShown = 1; popup('~ Open Water ~', run.x, run.y + 90, { size: 26, color: '#dff6ff' }); }
     if (run.zoneShown === 1 && run.x > OPEN_OCEAN) { run.zoneShown = 2; popup('~ THE OPEN OCEAN! ~', run.x, run.y + 90, { size: 28, color: '#ffd93b' }); }
 
+    // sea-state announcements: name the water as it roughens, so the run
+    // reads as a journey through escalating seas rather than one flat pond.
+    // Only ever announced forward — the roughness curve is a sawtooth across
+    // cycles and we don't want "calmer now!" banners on the way back down.
+    {
+      const sea = seaStateAt(run.x);
+      if (sea.name !== run.seaState && sea.rough > run.seaRough) {
+        run.seaState = sea.name; run.seaRough = sea.rough;
+        popup(`~ ${sea.name} ~`, run.x, run.y + 120, { size: 22, color: '#dff6ff', life: 1.6 });
+        sfx.seaState();
+      }
+    }
+
     // food pickups (with magnet pull)
     for (const f of foods) {
       if (f.taken || Math.abs(f.x - run.x) > 620) continue;
@@ -2046,7 +2088,7 @@ function drawWindStreaks(pal) {
 function drawPicado() {
   // papel picado bunting — fiesta HQ decoration, fades as you fly out to sea;
   // semi-transparent during play so it never hides the ball game
-  const inMenu = state === 'menu' || state === 'shop' || state === 'done';
+  const inMenu = state === 'menu' || state === 'shop' || state === 'records' || state === 'done';
   const alpha = (inMenu ? 1 : 0.55) * clamp(1 - cam.x / 2600, 0, 1);
   if (alpha <= 0) return;
   ctx.globalAlpha = alpha;
@@ -2706,7 +2748,7 @@ function drawSpeedLines(speed, size) {
 }
 
 function drawFish() {
-  if (state === 'menu' || state === 'shop' || state === 'done') return;
+  if (state === 'menu' || state === 'shop' || state === 'records' || state === 'done') return;
   drawFishTrail();
   const speed = state === 'fly' ? Math.hypot(run.vx, run.vy) : 0;
   ctx.save();
@@ -2785,6 +2827,40 @@ function drawSinkOverlay() {
   g.addColorStop(1, `rgba(2,10,20,${0.55 * t})`);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
+}
+// The "power lane": four independent reward systems all key off roughly the
+// same altitude — full wind starts around shelterTopAt+WIND_RAMP (~230-280),
+// thermal lift peaks at MID_ALT (260), Big Air scores above BIG_AIR_Y (260),
+// and pearls spawn from BIG_AIR_Y+60 up. That is a deliberately designed
+// high-risk/high-reward band, and until now absolutely nothing drew it — the
+// game had no altitude readout at all, so "fly high" was folklore rather than
+// a readable decision. This draws the lower edge of the band and lights it up
+// while the fish is inside.
+const LANE_Y = BIG_AIR_Y;          // where the payoffs begin
+const LANE_TOP = BIG_AIR_Y + 220;  // past the thermal bell's useful spread
+function drawPowerLane() {
+  if (state !== 'fly' && state !== 'sink') return;
+  const yBot = w2sy(LANE_Y), yTop = w2sy(LANE_TOP);
+  if (yBot < -40 || yTop > H + 40) return;  // band entirely off-screen
+  const inLane = run.y >= LANE_Y;
+  ctx.save();
+  const g = ctx.createLinearGradient(0, yBot, 0, yTop);
+  const a = inLane ? 0.16 : 0.07;
+  g.addColorStop(0, `rgba(255,217,59,${a})`);
+  g.addColorStop(1, 'rgba(255,217,59,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, yTop, W, yBot - yTop);
+  ctx.strokeStyle = inLane ? 'rgba(255,217,59,0.75)' : 'rgba(255,217,59,0.32)';
+  ctx.lineWidth = inLane ? 2.5 : 1.5;
+  ctx.setLineDash([14, 10]);
+  // scroll the dashes with the world so the line reads as a fixed altitude
+  ctx.lineDashOffset = -cam.x * 0.5;
+  ctx.beginPath(); ctx.moveTo(0, yBot); ctx.lineTo(W, yBot); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font = `bold 11px 'Comic Sans MS', sans-serif`;
+  ctx.fillStyle = inLane ? 'rgba(255,217,59,0.95)' : 'rgba(255,217,59,0.5)';
+  ctx.fillText(inLane ? 'POWER LANE — wind + lift + big air' : 'POWER LANE', 10, yBot - 6);
+  ctx.restore();
 }
 function drawPauseOverlay() {
   ctx.fillStyle = 'rgba(4,20,35,0.55)';
@@ -3240,6 +3316,7 @@ function render() {
   drawPicado();      // behind the action so the ring and fish stay readable
   drawSweetRing();
   drawSweetFaceTelegraph();
+  drawPowerLane();
   drawFoods();
   drawPearls();
   drawChilis();
@@ -3252,7 +3329,7 @@ function render() {
 /* ---------- HUD / screens ---------- */
 const $ = (id) => document.getElementById(id);
 function showScreen(name) {
-  for (const id of ['menu', 'shop', 'results']) $(id).classList.toggle('hidden', id !== name);
+  for (const id of ['menu', 'shop', 'records', 'results']) $(id).classList.toggle('hidden', id !== name);
 }
 function hud(on) {
   $('hud').classList.toggle('hidden', !on);
@@ -3431,6 +3508,30 @@ function buildShop() {
   }
 }
 
+/* ---------- records screen: save.records was tracked from the day it was
+   added but never displayed anywhere — it only decided whether to stamp
+   NEW RECORD on a results row, so you could beat your best trick count and
+   never learn what it actually was. ---------- */
+const RECORD_ROWS = [
+  ['🐟', 'Best distance', () => `${save.best} m`],
+  ['🌀', 'Most skips in a run', () => save.records.skips],
+  ['🔥', 'Longest combo streak', () => save.records.comboBest],
+  ['🤸', 'Most tricks in a run', () => save.records.tricks],
+  ['✨', 'Most sweet skips in a run', () => save.records.sweetSkips],
+  ['😮', 'Most near-misses in a run', () => save.records.nearMisses],
+  ['🚀', 'Most Big Air in a run', () => save.records.bigAir],
+  ['🦪', 'Pearls found', () => save.pearls],
+  ['🟡', 'Fish food banked', () => save.food],
+  ['🎣', 'Runs played', () => save.runs],
+];
+function buildRecords() {
+  $('recRows').innerHTML = RECORD_ROWS.map(([icon, label, get], i) => {
+    const v = get();
+    const dim = (v === 0 || v === '0 m') ? ' style="opacity:.45"' : '';
+    return `<div class="row"${dim} data-i="${i}"><div>${icon} ${label}</div><b>${v}</b></div>`;
+  }).join('');
+}
+
 /* ---------- input: one finger does everything — hold = boost, a quick
    tap (< TAP_MS) while airborne = a backflip trick instead ---------- */
 function tryStartFlip() {
@@ -3499,6 +3600,8 @@ window.addEventListener('keyup', (e) => { if (e.code === 'Space' || e.code === '
 
 $('playBtn').addEventListener('click', () => { audio(); sfx.click(); startRun(); });
 $('shopBtn').addEventListener('click', () => { audio(); sfx.click(); state = 'shop'; buildShop(); showScreen('shop'); });
+$('recordsBtn').addEventListener('click', () => { audio(); sfx.click(); state = 'records'; buildRecords(); showScreen('records'); });
+$('recBack').addEventListener('click', () => { sfx.click(); state = 'menu'; refreshMenuStats(); showScreen('menu'); });
 $('shopBack').addEventListener('click', () => { sfx.click(); state = 'menu'; refreshMenuStats(); showScreen('menu'); });
 $('againBtn').addEventListener('click', () => { sfx.click(); startRun(); });
 $('menuBtn').addEventListener('click', () => { sfx.click(); state = 'menu'; buildMenu(); showScreen('menu'); });
@@ -3575,7 +3678,7 @@ window.OceanSkips = {
              combo: run.combo, comboBest: run.comboBest, mult: mult(), sweetSkips: run.sweetSkips,
              tricks: run.tricks, flip: run.flip ? { ...run.flip } : null, flipQueue: run.flipQueue,
              nearMisses: run.nearMisses, pearls: run.pearls, freeBoostT: run.freeBoostT,
-             bigAir: run.bigAir, missionsCompleted: run.missionsCompleted.map((m) => m.id) };
+             bigAir: run.bigAir, seaState: run.seaState, missionsCompleted: run.missionsCompleted.map((m) => m.id) };
   },
   startFlip: tryStartFlip,   // test-only: force a flip attempt regardless of tap timing
   get hazards() { return hazards.map(h => ({ ...h })); },
@@ -3618,7 +3721,7 @@ window.OceanSkips = {
   MISSIONS, checkMissions,   // exposed for mission tests
   get missions() { return save.missions.map((s) => ({ ...s, ...MISSIONS.find((m) => m.id === s.id) })); },
   setActiveMissions(ids) { save.missions = ids.map((id) => ({ id })); },   // test-only
-  SWEET_SKIP_SLOPE, SWEET_SKIP_STEEP,
+  SWEET_SKIP_SLOPE, SWEET_SKIP_STEEP, seaStateAt, SEA_STATES, LANE_Y, LANE_TOP,
   runScore, medalFor, MEDALS, upgradeHasEffect,   // exposed for results/medal/economy tests
   setUpgrade(id, lvl) { if (id in save.up) save.up[id] = lvl; },   // test-only
   setRunStats(patch) { Object.assign(run, patch); },               // test-only
