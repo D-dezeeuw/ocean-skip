@@ -78,6 +78,8 @@
   }
   .card:hover { transform: translateY(-3px) rotate(-1deg); }
   .card.sel { outline: 4px solid #ffd93b; box-shadow: 0 0 0 3px #b97f00, 0 8px 18px #04293a88; }
+  .card.locked { filter: grayscale(0.65) brightness(0.85); cursor: default; }
+  .card.locked h3 { color: #556; }
   .card canvas { width: 104px; height: 58px; }
   .card h3 { font-size: 16px; color: #b3125c; }
   .card .species { font-size: 11px; color: #467; margin-bottom: 4px; }
@@ -281,31 +283,34 @@ const LUCHA = {
 };
 
 /* ---------- the fish ---------- */
+// unlock: {type:'free'} | {type:'best', m} (reach this distance once,
+// any fish) | {type:'skips', n} (n skips in one run, any fish) |
+// {type:'pearls', n} (buy for n pearls, once affordable)
 const FISH = [
   { id: 'chispa', name: 'Chispa', species: 'the Sardine', shape: 'slim',
     blurb: 'Queen of the bounce. Skips like she was born for it. (She was.)',
     power: 1.0, bounce: 0.58, drag: 0.10, lift: 0, minSkim: 250, seaLegs: 0.30, waveGrip: 1.0, size: 40, sail: 1.0,
-    colors: { body: '#43c6e0', belly: '#eef9fc', fin: '#f0567e' } },
+    colors: { body: '#43c6e0', belly: '#eef9fc', fin: '#f0567e' }, unlock: { type: 'free' } },
   { id: 'volador', name: 'Volador', species: 'the Flying Fish', shape: 'wing',
     blurb: 'Barely touches the water at all. Big waves ruin the hairdo.',
     power: 0.95, bounce: 0.50, drag: 0.045, lift: 0.55, minSkim: 240, seaLegs: 0.10, waveGrip: 1.2, size: 42, sail: 1.35,
-    colors: { body: '#7f9bd8', belly: '#eef2ff', fin: '#ffd93b' } },
+    colors: { body: '#7f9bd8', belly: '#eef2ff', fin: '#ffd93b' }, unlock: { type: 'best', m: 250 } },
   { id: 'globo', name: 'Globo', species: 'the Pufferfish', shape: 'puff',
     blurb: 'Round. Bouncy. Extremely round. Boings off every wave.',
     power: 0.80, bounce: 0.80, drag: 0.16, lift: 0, minSkim: 200, seaLegs: 0.45, waveGrip: 0.9, size: 44, sail: 1.1,
-    colors: { body: '#f2b04e', belly: '#ffedc9', fin: '#e0642f' } },
+    colors: { body: '#f2b04e', belly: '#ffedc9', fin: '#e0642f' }, unlock: { type: 'pearls', n: 8 } },
   { id: 'rayo', name: 'Rayo', species: 'the Mackerel', shape: 'dart',
     blurb: 'Launches like a rocket. Lands like a coin flip.',
     power: 1.25, bounce: 0.48, drag: 0.075, lift: 0, minSkim: 300, seaLegs: 0.25, waveGrip: 0.8, size: 44, sail: 0.75,
-    colors: { body: '#59c9a5', belly: '#e2f8f0', fin: '#8e44ad' } },
+    colors: { body: '#59c9a5', belly: '#e2f8f0', fin: '#8e44ad' }, unlock: { type: 'skips', n: 25 } },
   { id: 'donatun', name: 'Don Atún', species: 'the Tuna', shape: 'tank',
     blurb: 'Heavy. Slow to impress. The rough sea respects him.',
     power: 1.15, bounce: 0.50, drag: 0.12, lift: 0, minSkim: 280, seaLegs: 0.90, waveGrip: 0.5, size: 54, sail: 0.55,
-    colors: { body: '#5b6ea8', belly: '#e2e8f6', fin: '#2c8c74' } },
+    colors: { body: '#5b6ea8', belly: '#e2e8f6', fin: '#2c8c74' }, unlock: { type: 'pearls', n: 18 } },
   { id: 'velero', name: 'Velero', species: 'the Sailfish', shape: 'sail',
     blurb: 'Built entirely out of sail. Windy days, watch her fly. Calm days... less so.',
     power: 1.0, bounce: 0.42, drag: 0.09, lift: 0.2, minSkim: 320, seaLegs: 0.35, waveGrip: 0.85, size: 46, sail: 1.6,
-    colors: { body: '#3d5a99', belly: '#dce6f5', fin: '#00c2d6' } },
+    colors: { body: '#3d5a99', belly: '#dce6f5', fin: '#00c2d6' }, unlock: { type: 'pearls', n: 30 } },
 ];
 
 /* ---------- upgrades ---------- */
@@ -321,12 +326,31 @@ const UP_MAX = 5;
 const upCost = (lvl) => Math.round(20 * Math.pow(2.15, lvl) / 5) * 5;
 
 /* ---------- save data ---------- */
-const SAVE_KEY = 'oceanskips-save-v2';
+// v3 adds pearls + fish unlock progression. The v2 key is left untouched on
+// disk (never written again, never deleted) purely so a rollback to an
+// older build still finds its save intact.
+const SAVE_KEY = 'oceanskips-save-v3';
+const SAVE_KEY_V2 = 'oceanskips-save-v2';
 let save = { food: 0, best: 0, runs: 0, fish: 'chispa', muted: false, pearls: 0,
+             unlocked: { chispa: true },
              up: { power: 0, slick: 0, rubber: 0, magnet: 0, chili: 0, sail: 0 } };
 try {
   const raw = localStorage.getItem(SAVE_KEY);
-  if (raw) { const s = JSON.parse(raw); save = { ...save, ...s, up: { ...save.up, ...(s.up || {}) } }; }
+  if (raw) {
+    const s = JSON.parse(raw);
+    save = { ...save, ...s, up: { ...save.up, ...(s.up || {}) }, unlocked: { ...save.unlocked, ...(s.unlocked || {}) } };
+  } else {
+    // first load under v3 — migrate an existing v2 save if there is one.
+    // v2 had every fish free from the start, so grandfather in whichever
+    // fish was selected (in addition to chispa) rather than re-locking it.
+    const rawV2 = localStorage.getItem(SAVE_KEY_V2);
+    if (rawV2) {
+      const s2 = JSON.parse(rawV2);
+      save = { ...save, ...s2, up: { ...save.up, ...(s2.up || {}) },
+               unlocked: { chispa: true, [s2.fish || 'chispa']: true } };
+      localStorage.setItem(SAVE_KEY, JSON.stringify(save)); // persist the migration immediately
+    }
+  }
 } catch (e) { /* file:// or private mode — play without persistence */ }
 function persist() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} }
 
@@ -428,6 +452,7 @@ const sfx = {
   nearMiss: () => tone(1100, 0.08, { type: 'sine', vol: 0.1, slide: 260 }),
   pearl:   () => [1200, 1600, 2000].forEach((f, i) => tone(f, 0.09, { type: 'sine', vol: 0.09, delay: i * 0.04 })),
   chiliPickup: () => { tone(300, 0.2, { type: 'square', vol: 0.14, slide: 260 }); noiseBurst(900, 0.14, { vol: 0.1 }); },
+  unlock:  () => [392, 523, 659, 784, 1047].forEach((f, i) => tone(f, 0.16, { type: 'square', vol: 0.11, delay: i * 0.08 })),
 };
 
 /* ---------- wind whoosh: continuous filtered noise, gain AND pitch track
@@ -1219,6 +1244,7 @@ function stepBubbleColumns(dt) {
 
 /* ---------- run lifecycle ---------- */
 function startRun() {
+  if (!save.unlocked[fishDef.id]) fishDef = FISH[0]; // guard against a since-relocked selection
   const st = stats();
   state = 'ready';
   rollWaves();
@@ -1303,6 +1329,21 @@ function beginSink() {
   silenceWindAudio();
   splash(run.x, surfaceAt(run.x, time).y, 260);
 }
+// grants any fish whose milestone unlock condition this run just satisfied
+// (pearl-cost fish are a manual shop purchase instead — see buildMenu) and
+// returns the list of newly-unlocked fish for the results screen
+function checkUnlocks() {
+  const newly = [];
+  for (const f of FISH) {
+    if (save.unlocked[f.id]) continue;
+    const u = f.unlock;
+    if ((u.type === 'best' && save.best >= u.m) || (u.type === 'skips' && run.skips >= u.n)) {
+      save.unlocked[f.id] = true;
+      newly.push(f);
+    }
+  }
+  return newly;
+}
 function endRun() {
   state = 'done';
   hud(false);
@@ -1310,6 +1351,7 @@ function endRun() {
   const m = Math.round(run.dist / PX_PER_M);
   const isBest = m > save.best;
   if (isBest) save.best = m;
+  const newlyUnlocked = checkUnlocks();
   persist();
   document.getElementById('resTitle').textContent = pickTitle(m, isBest);
   document.getElementById('resDist').textContent = m + ' m';
@@ -1317,9 +1359,11 @@ function endRun() {
     ? '<span class="newbest">🏆 NEW BEST!</span>' : `Best: ${save.best} m`;
   document.getElementById('resLine').textContent =
     `${run.skips} skip${run.skips === 1 ? '' : 's'} · 🟡 ${run.food} fish food` +
-    (run.dist > OPEN_OCEAN ? ' · you reached the open ocean! 🌑🌊' : '');
+    (run.dist > OPEN_OCEAN ? ' · you reached the open ocean! 🌑🌊' : '') +
+    (newlyUnlocked.length ? ` · ¡Nuevo pez! ${newlyUnlocked.map((f) => f.name).join(', ')} 🐟✨` : '');
   showScreen('results');
-  if (isBest && m > 0) sfx.best();
+  if (newlyUnlocked.length) sfx.unlock();
+  else if (isBest && m > 0) sfx.best();
 }
 function pickTitle(m, best) {
   if (best && m > 0) return 'Legend of the Sea!';
@@ -2943,35 +2987,72 @@ function updateHud() {
 }
 
 /* ---------- menu / shop ---------- */
+function unlockReqText(f) {
+  const u = f.unlock;
+  if (u.type === 'best') return `Reach ${u.m}m best distance to unlock`;
+  if (u.type === 'skips') return `Get ${u.n} skips in one run to unlock`;
+  if (u.type === 'pearls') return '';
+  return '';
+}
 function buildMenu() {
   const wrap = $('fishCards');
   wrap.innerHTML = '';
   for (const f of FISH) {
+    const unlocked = !!save.unlocked[f.id];
     const card = document.createElement('div');
-    card.className = 'card' + (f.id === fishDef.id ? ' sel' : '');
-    card.innerHTML = `
-      <h3>${f.name}</h3><div class="species">${f.species}</div>
-      <canvas width="104" height="58"></canvas>
-      <div class="stat"><b>power</b><div class="bar"><i style="width:${Math.round(f.power / 1.3 * 100)}%"></i></div></div>
-      <div class="stat"><b>bounce</b><div class="bar"><i style="width:${Math.round(f.bounce / 0.85 * 100)}%"></i></div></div>
-      <div class="stat"><b>aero</b><div class="bar"><i style="width:${Math.round((1 - f.drag / 0.18) * 100)}%"></i></div></div>
-      <div class="stat"><b>sea legs</b><div class="bar"><i style="width:${Math.round(f.seaLegs * 100)}%"></i></div></div>
-      <div class="blurb">${f.blurb}</div>`;
-    card.addEventListener('click', () => {
-      fishDef = f; save.fish = f.id; persist(); sfx.click();
-      for (const c of wrap.children) c.classList.remove('sel');
-      card.classList.add('sel');
-    });
+    card.className = 'card' + (unlocked && f.id === fishDef.id ? ' sel' : '') + (unlocked ? '' : ' locked');
+    if (unlocked) {
+      card.innerHTML = `
+        <h3>${f.name}</h3><div class="species">${f.species}</div>
+        <canvas width="104" height="58"></canvas>
+        <div class="stat"><b>power</b><div class="bar"><i style="width:${Math.round(f.power / 1.3 * 100)}%"></i></div></div>
+        <div class="stat"><b>bounce</b><div class="bar"><i style="width:${Math.round(f.bounce / 0.85 * 100)}%"></i></div></div>
+        <div class="stat"><b>aero</b><div class="bar"><i style="width:${Math.round((1 - f.drag / 0.18) * 100)}%"></i></div></div>
+        <div class="stat"><b>sea legs</b><div class="bar"><i style="width:${Math.round(f.seaLegs * 100)}%"></i></div></div>
+        <div class="blurb">${f.blurb}</div>`;
+      card.addEventListener('click', () => {
+        fishDef = f; save.fish = f.id; persist(); sfx.click();
+        for (const c of wrap.children) c.classList.remove('sel');
+        card.classList.add('sel');
+      });
+    } else if (f.unlock.type === 'pearls') {
+      const affordable = save.pearls >= f.unlock.n;
+      card.innerHTML = `
+        <h3>🔒 ${f.name}</h3><div class="species">${f.species}</div>
+        <canvas width="104" height="58"></canvas>
+        <div class="blurb">${f.blurb}</div>
+        <button class="buy lockbuy" ${affordable ? '' : 'disabled'}>🦪 ${f.unlock.n}</button>`;
+      card.querySelector('.lockbuy').addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (save.pearls < f.unlock.n) { sfx.nope(); return; }
+        save.pearls -= f.unlock.n;
+        save.unlocked[f.id] = true;
+        persist(); sfx.buy();
+        buildMenu();
+      });
+    } else {
+      card.innerHTML = `
+        <h3>🔒 ${f.name}</h3><div class="species">${f.species}</div>
+        <canvas width="104" height="58"></canvas>
+        <div class="blurb">${unlockReqText(f)}</div>`;
+      card.addEventListener('click', () => sfx.nope());
+    }
     wrap.appendChild(card);
     const cv = card.querySelector('canvas');
     const mc = cv.getContext('2d');
-    const portrait = assets['portrait' + f.id[0].toUpperCase() + f.id.slice(1)];
-    if (portrait?.loaded) {
-      mc.drawImage(portrait.el, 0, 0, cv.width, cv.height);
+    if (unlocked) {
+      const portrait = assets['portrait' + f.id[0].toUpperCase() + f.id.slice(1)];
+      if (portrait?.loaded) {
+        mc.drawImage(portrait.el, 0, 0, cv.width, cv.height);
+      } else {
+        mc.translate(52, 30);
+        mc.scale(0.9, 0.9);
+        drawFishShape(mc, f, 0.4, {});
+      }
     } else {
       mc.translate(52, 30);
       mc.scale(0.9, 0.9);
-      drawFishShape(mc, f, 0.4, {});
+      drawFishShape(mc, f, 0.4, { silhouette: true });
     }
   }
   refreshMenuStats();
@@ -3173,6 +3254,9 @@ window.OceanSkips = {
   sfx, updateWindAudio,   // exposed for audio-tuning tests
   selectFish(id) { const f = FISH.find(x => x.id === id); if (f) { fishDef = f; save.fish = f.id; } },
   warp(x) { cam.x = x; menuWrapLimit = Math.max(4200, x + 8000); },
+  get save() { return JSON.parse(JSON.stringify(save)); },   // exposed for save-migration tests
+  get fishList() { return FISH.map((f) => ({ id: f.id, unlock: { ...f.unlock } })); },
+  grantPearls(n) { save.pearls += n; persist(); },   // test/debug helper
 };
 
 /* ---------- cache-busting service worker ---------- */
