@@ -1,10 +1,19 @@
 #!/usr/bin/env node
 // Pure numeric unit test of the Phase 5 performance/meta logic
-// (implementation-20.md feature 20: particle cap + auto quality scaler).
-// Mirrors index.html's capParticles/updateQualityScaler exactly — no
-// browser, no rendering.
+// (implementation-20.md feature 20: particle cap + auto quality scaler),
+// plus a live section (point 15 of implementation-15.md) confirming the
+// cap actually holds in the running game once trails/speed-lines/boost
+// flame (drawn as strokes, not particles — deliberately, so they can't
+// touch the budget) and the newer particle-emitting events (hazard-hit
+// debris, pearl/chili sparkles) are all firing at once.
 //
 // Run: node tests/perf.mjs
+// The live section needs playwright-core resolvable and a Chromium binary
+// — set CHROMIUM_PATH, default /opt/pw-browsers/chromium.
+import { createRequire } from 'node:module';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 const lerp = (a, b, t) => a + (b - a) * t;
 
@@ -96,6 +105,57 @@ function check(label, cond, detail) {
   check('a single slow frame does not immediately drop every layer',
     quality.causticsLayer2 && quality.rays && quality.ambientBubbles,
     JSON.stringify(quality));
+}
+
+// 5) Live: the particle count never exceeds PARTICLE_CAP even with a dense
+// field of hazards (debris puffs on hit) and pearls/chilis (sparkles on
+// pickup) all firing while boosting (trail + speed lines + flame — all
+// drawn as strokes, so they shouldn't add to this count at all).
+{
+  const require = createRequire(import.meta.url);
+  const { chromium } = require('playwright-core');
+  const GAME = 'file://' + join(dirname(dirname(fileURLToPath(import.meta.url))), 'index.html');
+  const EXE = process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium';
+
+  const browser = await chromium.launch({ executablePath: EXE, headless: true });
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+
+  await page.goto(GAME);
+  await page.waitForTimeout(300);
+  await page.click('#playBtn');
+  await page.waitForTimeout(150);
+  await page.mouse.down(); await page.mouse.up(); // toss
+  await page.waitForTimeout(230);
+  await page.mouse.down(); await page.mouse.up(); // swing -> fly
+  await page.waitForTimeout(50);
+
+  const before = await page.evaluate(() => window.OceanSkips.snapshot);
+  await page.evaluate(({ x0, y0 }) => {
+    for (let x = x0; x < x0 + 3000; x += 50) {
+      window.OceanSkips.spawnHazard(x, Math.random() < 0.5 ? 'buoy' : 'gull');
+      window.OceanSkips.spawnPearl(x + 15, y0 - 150 + Math.sin(x * 0.01) * 200);
+      window.OceanSkips.spawnChili(x + 30, y0 - 150 + Math.sin(x * 0.01 + 1) * 200);
+    }
+  }, { x0: before.x + 30, y0: before.y });
+  await page.mouse.down(); // hold boost the whole time: trail + speed lines + flame all active together
+
+  const cap = await page.evaluate(() => window.OceanSkips.PARTICLE_CAP);
+  let maxSeen = 0;
+  for (let i = 0; i < 20; i++) {
+    await page.waitForTimeout(150);
+    const n = await page.evaluate(() => window.OceanSkips.particleCount);
+    maxSeen = Math.max(maxSeen, n);
+  }
+  await page.mouse.up();
+
+  check('particle count never exceeds PARTICLE_CAP under a dense hazard/pickup field while boosting',
+    maxSeen <= cap, `maxSeen=${maxSeen} cap=${cap}`);
+  check('no console/page errors during the live particle-cap check', errors.length === 0, errors.join(' | '));
+
+  await browser.close();
 }
 
 console.log(failures ? `\n${failures} check(s) FAILED` : '\nAll checks passed');

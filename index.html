@@ -51,6 +51,7 @@
   }
   h1.logo .o2 { color: #ffd93b; }
   .tagline { color: #fff3d6; font-size: clamp(13px, 2.4vw, 18px); text-shadow: 0 2px 6px #04293a99; }
+  .missions { color: #fff3d6; font-size: 11.5px; text-shadow: 0 1px 4px #04293a99; line-height: 1.4; }
 
   .btn {
     font: inherit; font-size: 18px; font-weight: bold; color: #5a3a00;
@@ -78,6 +79,8 @@
   }
   .card:hover { transform: translateY(-3px) rotate(-1deg); }
   .card.sel { outline: 4px solid #ffd93b; box-shadow: 0 0 0 3px #b97f00, 0 8px 18px #04293a88; }
+  .card.locked { filter: grayscale(0.65) brightness(0.85); cursor: default; }
+  .card.locked h3 { color: #556; }
   .card canvas { width: 104px; height: 58px; }
   .card h3 { font-size: 16px; color: #b3125c; }
   .card .species { font-size: 11px; color: #467; margin-bottom: 4px; }
@@ -120,6 +123,7 @@
   .chip { background: #04293aa8; color: #fff; border-radius: 999px; padding: 4px 14px;
     font-size: 14px; text-shadow: 0 1px 2px #000a; white-space: nowrap; }
   .chip small { opacity: .75; font-size: 10px; }
+  .chip.combo { background: linear-gradient(90deg, #ff9800, #d81b74); animation: pulse .5s infinite alternate; }
   #hint {
     position: fixed; top: calc(52px + env(safe-area-inset-top)); left: 0; right: 0;
     text-align: center; z-index: 5; color: #fff3d6; font-size: clamp(13px, 2.4vw, 16px);
@@ -144,6 +148,17 @@
   #results .big { font-size: clamp(28px, 6vw, 48px); color: #b3125c; }
   #results .newbest { color: #d9820b; font-weight: bold; animation: pulse 1s infinite alternate; }
   @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.08); } }
+  .medalWrap { display: flex; justify-content: center; }
+  #medalCanvas { width: 60px; height: 75px; }
+  .breakdown { text-align: left; font-size: 12.5px; color: #245; margin: 4px 0; max-height: 34vh; overflow-y: auto; }
+  .breakdown .row {
+    display: flex; justify-content: space-between; gap: 8px; padding: 2px 4px;
+    border-bottom: 1px dashed #f3b8d1; animation: rowIn .32s ease both;
+  }
+  .breakdown .row:last-child { border-bottom: 0; }
+  .breakdown .row b { color: #b3125c; white-space: nowrap; }
+  .breakdown .newrecord { color: #d9820b; font-weight: bold; font-size: 10px; margin-left: 5px; }
+  @keyframes rowIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
   .rowbtns { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
 
   /* ---------- rotate-your-phone overlay ---------- */
@@ -179,18 +194,23 @@
   <span class="chip" id="hudSpeed">0 <small>km/h</small></span>
   <span class="chip" id="hudFood">🟡 0</span>
   <span class="chip hidden" id="hudWind">💨 0</span>
+  <span class="chip hidden combo" id="hudCombo">🔥 ×2</span>
+  <span class="chip hidden" id="hudPearls">🦪 0</span>
 </div>
 <div id="energy" class="hidden"><span>🌶️</span><div class="ebar"><i id="efill"></i></div></div>
 <div id="hint" class="hidden"></div>
 <div class="cornerBtns">
   <button id="fsBtn" title="Fullscreen">⛶</button>
+  <button id="musicBtn" title="Music">🎵</button>
   <button id="muteBtn" title="Sound">🔊</button>
+  <button id="pauseBtn" title="Pause">⏸</button>
 </div>
 
 <!-- ---------- MENU ---------- -->
 <div id="menu" class="screen">
   <h1 class="logo">Ocean<span class="o2">Skips</span></h1>
   <div class="tagline">Beach fiesta! Bat your fish clear across the ocean 🌊🎉</div>
+  <div class="missions" id="missionsPanel"></div>
   <div class="cards" id="fishCards"></div>
   <div class="rowbtns">
     <button class="btn" id="playBtn">Play! 🐟</button>
@@ -214,9 +234,11 @@
 <div id="results" class="screen hidden">
   <div class="panel">
     <h2 id="resTitle">Splashdown!</h2>
+    <div class="medalWrap"><canvas id="medalCanvas" width="72" height="90"></canvas></div>
     <div class="big" id="resDist">0 m</div>
     <div id="resBestNote"></div>
-    <p id="resLine" style="margin:6px 0 12px; font-size:13px; color:#245;"></p>
+    <div id="resBreakdown" class="breakdown"></div>
+    <p id="resLine" style="margin:4px 0 10px; font-size:12.5px; color:#245;"></p>
     <div class="rowbtns">
       <button class="btn" id="againBtn">Play again 🔁</button>
       <button class="btn pink" id="menuBtn">Menu</button>
@@ -241,6 +263,7 @@ const TAU = Math.PI * 2;
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 const lerp = (a, b, t) => a + (b - a) * t;
 const rand = (a, b) => a + Math.random() * (b - a);
+const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 
 /* ---------- tuning ---------- */
 const G = 1500;                 // gravity px/s²
@@ -256,34 +279,122 @@ const ENERGY_FOOD = 25;         // energy per golden sphere
 const BOOST_ACC = 660;          // px/s² while holding
 const BOOST_DIVE = 260;         // px/s² added downward pull while holding — dive to aim your landing spot
 const BOOST_DRAIN = 30;         // energy per second
+const TRAIL_MAX = 22;           // motion-trail ribbon: max sampled points
+const TRAIL_DT = 0.018;         // seconds between trail samples (~55/s, not every physics tick)
+const SPEED_LINES_MIN = 1600;   // px/s above which speed-line streaks appear
+const SWEET_SKIP_STEEP = 0.28;  // contact must be this grazing (0=flat, 1=vertical) or shallower
+const SWEET_SKIP_SLOPE = 0.05;  // minimum downslope magnitude (s.slope) to count as a real wave face
+const TAP_MS = 0.18;            // press+release faster than this in flight = a flip, not a boost hold
+const FLIP_DUR = 0.55;          // seconds for one full backflip rotation
+const FLIP_QUEUE_MAX = 1;       // extra flips that can be queued while one is mid-rotation
+const HAZARD_START_X = 2600;    // first hazard can appear this far out — early enough most runs meet one
+const HAZARD_HIT_R = { buoy: 30, gull: 26 };
+const NEAR_MISS_R = 110;        // px — flying this close to an unhit hazard credits a near-miss, once
+
+/* ---------- the luchador ---------- */
+const LUCHA = {
+  skin: '#e8a06a', mask: '#d81b74', maskTrim: '#ffd93b', maskTrim2: '#43c6e0',
+  serape: '#43c6e0', serapeStripe: '#f0567e', serapeStripe2: '#ffd93b',
+  pants: '#3b3b57', boots: '#5a3a1e', hatCrown: '#e0a838', hatBrim: '#f0c565', hatBand: '#b3125c',
+  bat: '#c98d4a', glove: '#f0567e',
+};
 
 /* ---------- the fish ---------- */
+// unlock: {type:'free'} | {type:'best', m} (reach this distance once,
+// any fish) | {type:'skips', n} (n skips in one run, any fish) |
+// {type:'pearls', n} (buy for n pearls, once affordable)
 const FISH = [
   { id: 'chispa', name: 'Chispa', species: 'the Sardine', shape: 'slim',
     blurb: 'Queen of the bounce. Skips like she was born for it. (She was.)',
     power: 1.0, bounce: 0.58, drag: 0.10, lift: 0, minSkim: 250, seaLegs: 0.30, waveGrip: 1.0, size: 40, sail: 1.0,
-    colors: { body: '#43c6e0', belly: '#eef9fc', fin: '#f0567e' } },
+    colors: { body: '#43c6e0', belly: '#eef9fc', fin: '#f0567e' }, unlock: { type: 'free' } },
   { id: 'volador', name: 'Volador', species: 'the Flying Fish', shape: 'wing',
     blurb: 'Barely touches the water at all. Big waves ruin the hairdo.',
     power: 0.95, bounce: 0.50, drag: 0.045, lift: 0.55, minSkim: 240, seaLegs: 0.10, waveGrip: 1.2, size: 42, sail: 1.35,
-    colors: { body: '#7f9bd8', belly: '#eef2ff', fin: '#ffd93b' } },
+    colors: { body: '#7f9bd8', belly: '#eef2ff', fin: '#ffd93b' }, unlock: { type: 'best', m: 250 } },
   { id: 'globo', name: 'Globo', species: 'the Pufferfish', shape: 'puff',
     blurb: 'Round. Bouncy. Extremely round. Boings off every wave.',
     power: 0.80, bounce: 0.80, drag: 0.16, lift: 0, minSkim: 200, seaLegs: 0.45, waveGrip: 0.9, size: 44, sail: 1.1,
-    colors: { body: '#f2b04e', belly: '#ffedc9', fin: '#e0642f' } },
+    colors: { body: '#f2b04e', belly: '#ffedc9', fin: '#e0642f' }, unlock: { type: 'pearls', n: 8 } },
   { id: 'rayo', name: 'Rayo', species: 'the Mackerel', shape: 'dart',
     blurb: 'Launches like a rocket. Lands like a coin flip.',
     power: 1.25, bounce: 0.48, drag: 0.075, lift: 0, minSkim: 300, seaLegs: 0.25, waveGrip: 0.8, size: 44, sail: 0.75,
-    colors: { body: '#59c9a5', belly: '#e2f8f0', fin: '#8e44ad' } },
+    colors: { body: '#59c9a5', belly: '#e2f8f0', fin: '#8e44ad' }, unlock: { type: 'skips', n: 25 } },
   { id: 'donatun', name: 'Don Atún', species: 'the Tuna', shape: 'tank',
     blurb: 'Heavy. Slow to impress. The rough sea respects him.',
     power: 1.15, bounce: 0.50, drag: 0.12, lift: 0, minSkim: 280, seaLegs: 0.90, waveGrip: 0.5, size: 54, sail: 0.55,
-    colors: { body: '#5b6ea8', belly: '#e2e8f6', fin: '#2c8c74' } },
+    colors: { body: '#5b6ea8', belly: '#e2e8f6', fin: '#2c8c74' }, unlock: { type: 'pearls', n: 18 } },
   { id: 'velero', name: 'Velero', species: 'the Sailfish', shape: 'sail',
     blurb: 'Built entirely out of sail. Windy days, watch her fly. Calm days... less so.',
     power: 1.0, bounce: 0.42, drag: 0.09, lift: 0.2, minSkim: 320, seaLegs: 0.35, waveGrip: 0.85, size: 46, sail: 1.6,
-    colors: { body: '#3d5a99', belly: '#dce6f5', fin: '#00c2d6' } },
+    colors: { body: '#3d5a99', belly: '#dce6f5', fin: '#00c2d6' }, unlock: { type: 'pearls', n: 30 } },
 ];
+
+/* ---------- missions: single-run goals that give a session structure —
+   3 are active at once (save.missions), each an {id} pointing into this
+   pool; completing one grants its reward immediately and pulls in the
+   next unused pool entry (save.missionCursor), in pool order, so which
+   missions show up next is deterministic rather than randomly rerolled ---------- */
+const MISSIONS = [
+  { id: 'dist200',   text: 'Fly 200m in one run',            stat: 'dist',       target: 200, reward: { food: 20 } },
+  { id: 'dist400',   text: 'Fly 400m in one run',             stat: 'dist',       target: 400, reward: { food: 35 } },
+  { id: 'skips8',    text: 'Get 8 skips in one run',           stat: 'skips',      target: 8,   reward: { food: 20 } },
+  { id: 'skips15',   text: 'Get 15 skips in one run',          stat: 'skips',      target: 15,  reward: { food: 35 } },
+  { id: 'food10',    text: 'Collect 10 fish food in one run',  stat: 'food',       target: 10,  reward: { food: 15 } },
+  { id: 'trick1',    text: 'Land a backflip',                  stat: 'tricks',     target: 1,   reward: { food: 15 } },
+  { id: 'trick3',    text: 'Land 3 backflips in one run',      stat: 'tricks',     target: 3,   reward: { pearls: 1 } },
+  { id: 'nearmiss3', text: 'Get 3 near-misses in one run',     stat: 'nearMisses', target: 3,   reward: { food: 20 } },
+  { id: 'sweet3',    text: 'Land 3 sweet skips in one run',    stat: 'sweetSkips', target: 3,   reward: { food: 20 } },
+  { id: 'combo8',    text: 'Reach an 8-skip combo streak',     stat: 'comboBest',  target: 8,   reward: { pearls: 1 } },
+  { id: 'bigair2',   text: 'Score Big Air twice in one run',   stat: 'bigAir',     target: 2,   reward: { food: 25 } },
+  { id: 'pearl1',    text: 'Find a pearl',                     stat: 'pearls',     target: 1,   reward: { food: 15 } },
+];
+function missionStatValue(stat) {
+  switch (stat) {
+    case 'dist': return Math.round(run.dist / PX_PER_M);
+    case 'skips': return run.skips;
+    case 'food': return run.food;
+    case 'tricks': return run.tricks;
+    case 'nearMisses': return run.nearMisses;
+    case 'sweetSkips': return run.sweetSkips;
+    case 'comboBest': return run.comboBest;
+    case 'bigAir': return run.bigAir;
+    case 'pearls': return run.pearls;
+    default: return 0;
+  }
+}
+// picks the next pool entry in cursor order, skipping any id already active
+// in another slot — bounded by the pool size so it can't loop forever
+function nextMissionId() {
+  const activeIds = new Set(save.missions.map((m) => m.id));
+  for (let tries = 0; tries < MISSIONS.length; tries++) {
+    const cand = MISSIONS[save.missionCursor % MISSIONS.length];
+    save.missionCursor++;
+    if (!activeIds.has(cand.id)) return cand.id;
+  }
+  return MISSIONS[save.missionCursor % MISSIONS.length].id;
+}
+function ensureMissions() {
+  while (save.missions.length < 3) save.missions.push({ id: nextMissionId() });
+}
+// checked continuously during flight (and once more at endRun, to catch
+// the last instant before landing) — a completed mission pays out
+// immediately rather than waiting for results, and is swapped for a fresh
+// pool entry right away so a productive run can clear several in a row
+function checkMissions() {
+  for (let i = 0; i < save.missions.length; i++) {
+    const def = MISSIONS.find((m) => m.id === save.missions[i].id);
+    if (!def) continue;
+    if (missionStatValue(def.stat) >= def.target) {
+      if (def.reward.food) save.food += def.reward.food;
+      if (def.reward.pearls) save.pearls += def.reward.pearls;
+      run.missionsCompleted.push(def);
+      popup(`¡Misión! ${def.text} ✔`, run.x, run.y + 100, { size: 15, color: '#9ccc2e' });
+      sfx.mission();
+      save.missions[i] = { id: nextMissionId() };
+    }
+  }
+}
 
 /* ---------- upgrades ---------- */
 const UPGRADES = [
@@ -295,17 +406,44 @@ const UPGRADES = [
   { id: 'sail',   icon: '🪁', name: 'Kite Fins', desc: '+10% tailwind pull, softer headwind per level' },
 ];
 const UP_MAX = 5;
-const upCost = (lvl) => Math.round(20 * Math.pow(2.15, lvl) / 5) * 5;
+// base bumped 20 -> 65: the skip-combo multiplier (points 6-10) roughly
+// tripled average per-run food income (combo-scaled pickups, Big Air,
+// near-misses, tricks — none of which existed against the original flat
+// "+1 per orb" economy this curve was tuned for), so the old base priced a
+// maxed track at ~8-10 runs; this keeps the curve's shape but retargets
+// ~25-35 runs per maxed track under the new income rate
+const upCost = (lvl) => Math.round(65 * Math.pow(2.15, lvl) / 5) * 5;
 
 /* ---------- save data ---------- */
-const SAVE_KEY = 'oceanskips-save-v2';
-let save = { food: 0, best: 0, runs: 0, fish: 'chispa', muted: false,
+// v3 adds pearls + fish unlock progression. The v2 key is left untouched on
+// disk (never written again, never deleted) purely so a rollback to an
+// older build still finds its save intact.
+const SAVE_KEY = 'oceanskips-save-v3';
+const SAVE_KEY_V2 = 'oceanskips-save-v2';
+let save = { food: 0, best: 0, runs: 0, fish: 'chispa', muted: false, pearls: 0, music: true,
+             unlocked: { chispa: true }, missions: [], missionCursor: 0,
+             records: { skips: 0, tricks: 0, sweetSkips: 0, nearMisses: 0, comboBest: 0, bigAir: 0 },
              up: { power: 0, slick: 0, rubber: 0, magnet: 0, chili: 0, sail: 0 } };
 try {
   const raw = localStorage.getItem(SAVE_KEY);
-  if (raw) { const s = JSON.parse(raw); save = { ...save, ...s, up: { ...save.up, ...(s.up || {}) } }; }
+  if (raw) {
+    const s = JSON.parse(raw);
+    save = { ...save, ...s, up: { ...save.up, ...(s.up || {}) }, unlocked: { ...save.unlocked, ...(s.unlocked || {}) } };
+  } else {
+    // first load under v3 — migrate an existing v2 save if there is one.
+    // v2 had every fish free from the start, so grandfather in whichever
+    // fish was selected (in addition to chispa) rather than re-locking it.
+    const rawV2 = localStorage.getItem(SAVE_KEY_V2);
+    if (rawV2) {
+      const s2 = JSON.parse(rawV2);
+      save = { ...save, ...s2, up: { ...save.up, ...(s2.up || {}) },
+               unlocked: { chispa: true, [s2.fish || 'chispa']: true } };
+      localStorage.setItem(SAVE_KEY, JSON.stringify(save)); // persist the migration immediately
+    }
+  }
 } catch (e) { /* file:// or private mode — play without persistence */ }
 function persist() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} }
+ensureMissions(); // guarantee 3 active slots whether this is a fresh save or one from before missions existed
 
 /* ---------- audio: tiny synth, zero assets ---------- */
 let actx = null;
@@ -393,6 +531,21 @@ const sfx = {
   buy:     () => { tone(700, 0.08, { type: 'square', vol: 0.1 }); tone(1050, 0.12, { type: 'square', vol: 0.1, delay: 0.06 }); },
   nope:    () => tone(160, 0.18, { type: 'square', vol: 0.1, slide: -60 }),
   gust:    () => tone(220, 0.35, { type: 'sawtooth', vol: 0.14, slide: 90 }),
+  // rising arpeggio, pitched up per combo tier so tier 4 sounds noticeably
+  // more triumphant than tier 1
+  combo: (tier) => [0, 1, 2].forEach((i) => tone(440 + tier * 70 + i * 140, 0.1,
+    { type: 'square', vol: 0.09, delay: i * 0.05 })),
+  comboBreak: () => tone(280, 0.22, { type: 'sawtooth', vol: 0.12, slide: -180 }),
+  surf:    () => tone(520, 0.16, { type: 'sine', vol: 0.14, slide: 140 }),
+  trick:   () => [740, 988, 1318].forEach((f, i) => tone(f, 0.1, { type: 'triangle', vol: 0.1, delay: i * 0.055 })),
+  bonk:    () => { tone(110, 0.12, { type: 'square', vol: 0.22, slide: -40 }); noiseBurst(300, 0.1, { vol: 0.15, freqSlide: -150 }); },
+  squawk:  () => tone(700, 0.14, { type: 'sawtooth', vol: 0.14, slide: -320 }),
+  nearMiss: () => tone(1100, 0.08, { type: 'sine', vol: 0.1, slide: 260 }),
+  pearl:   () => [1200, 1600, 2000].forEach((f, i) => tone(f, 0.09, { type: 'sine', vol: 0.09, delay: i * 0.04 })),
+  chiliPickup: () => { tone(300, 0.2, { type: 'square', vol: 0.14, slide: 260 }); noiseBurst(900, 0.14, { vol: 0.1 }); },
+  unlock:  () => [392, 523, 659, 784, 1047].forEach((f, i) => tone(f, 0.16, { type: 'square', vol: 0.11, delay: i * 0.08 })),
+  mission: () => [523, 784].forEach((f, i) => tone(f, 0.12, { type: 'triangle', vol: 0.1, delay: i * 0.06 })),
+  medal:   () => [392, 523, 659, 880, 1047, 1319].forEach((f, i) => tone(f, 0.15, { type: 'square', vol: 0.1, delay: i * 0.07 })),
 };
 
 /* ---------- wind whoosh: continuous filtered noise, gain AND pitch track
@@ -429,6 +582,47 @@ function updateWindAudio(rsp, y) {
 function silenceWindAudio() {
   if (windNoise && actx) windNoise.gain.gain.setTargetAtTime(0, actx.currentTime, 0.15);
 }
+
+/* ---------- dynamic mariachi loop: a lookahead scheduler (look-ahead
+   pattern — schedule everything due within the next SCHEDULE_AHEAD seconds
+   of real audio-clock time, tick again in SCHEDULER_INTERVAL_MS) built on
+   the existing tone()/noiseBurst() delay param. Bass + offbeat clap always
+   play; a melody layer joins once the skip-combo multiplier reaches x3,
+   and a bright lead once it reaches x5 — so the music itself tells you
+   your combo is alive. Falls back to just the calm bass+clap outside
+   flight (menu, results, etc). ---------- */
+const MUSIC_BPM = 104;
+const BEAT_DUR = 60 / MUSIC_BPM;
+const SCHEDULE_AHEAD = 0.22;
+const SCHEDULER_INTERVAL_MS = 100;
+const BASS_PATTERN =   [-12, null, -5, null, -12, null, -7, null];
+const CLAP_BEATS = new Set([2, 6]);
+const MELODY_PATTERN = [null, 12, 15, null, 19, null, 17, 15];
+const LEAD_PATTERN =   [24, null, null, 27, null, 24, null, 22];
+const midiToFreq = (semi) => 110 * Math.pow(2, semi / 12); // 110Hz reference root
+let musicNextBeatTime = 0, musicBeatIndex = 0;
+function scheduleMusic() {
+  if (!save.music || save.muted) return;
+  const ac = audio();
+  if (!ac) return;
+  if (musicNextBeatTime < ac.currentTime) musicNextBeatTime = ac.currentTime; // catch up after a long pause/tab-hide
+  while (musicNextBeatTime < ac.currentTime + SCHEDULE_AHEAD) {
+    const beat = musicBeatIndex % 8;
+    const delay = Math.max(0, musicNextBeatTime - ac.currentTime);
+    const activeTier = state === 'fly' ? mult() - 1 : 0;
+    if (BASS_PATTERN[beat] != null) tone(midiToFreq(BASS_PATTERN[beat]), BEAT_DUR * 0.9, { type: 'triangle', vol: 0.09, delay });
+    if (CLAP_BEATS.has(beat)) noiseBurst(1800, 0.06, { vol: 0.06, q: 2, delay });
+    if (activeTier >= 2 && MELODY_PATTERN[beat] != null) {
+      tone(midiToFreq(MELODY_PATTERN[beat]), BEAT_DUR * 0.8, { type: 'square', vol: 0.06, delay });
+    }
+    if (activeTier >= 4 && LEAD_PATTERN[beat] != null) {
+      tone(midiToFreq(LEAD_PATTERN[beat]), BEAT_DUR * 0.7, { type: 'sawtooth', vol: 0.07, slide: 20, delay });
+    }
+    musicNextBeatTime += BEAT_DUR;
+    musicBeatIndex++;
+  }
+}
+setInterval(scheduleMusic, SCHEDULER_INTERVAL_MS);
 
 /* ---------- canvas ---------- */
 const cvs = document.getElementById('game');
@@ -871,8 +1065,12 @@ Promise.all(Object.values(assets).map((a) => new Promise((res) => {
 let state = 'menu';   // menu | ready | toss | fly | sink | done | shop
 let time = 0;
 let cam = { x: 0, y: 0 };
+let camShake = { amp: 0, t: 0 };  // decaying screen shake, applied inside w2sx/w2sy
+let hitstopT = 0;                 // seconds of physics-frozen "impact frame" remaining
+let paused = false;                // freezes physics/spawners; render() and the HUD keep going
 let fishDef = FISH.find(f => f.id === save.fish) || FISH[0];
 let held = false;     // pointer/space currently down (boost)
+let flyPressT = -1;   // time() of the last press that happened during 'fly' — tap vs hold
 
 const run = {
   x: 0, y: 0, vx: 0, vy: 0, wiggle: 0,
@@ -881,12 +1079,36 @@ const run = {
   energy: 0, maxEnergy: 100,
   lastBounceT: 0, boostSfxT: 0, zoneShown: 0,
   hopApex: 0,   // highest y reached since the last bounce — Big Air scoring
+  squashT: -1,  // time of the last impact (swing contact / bounce) — drives squash&stretch
+  trail: [],    // {x,y} ribbon of recent positions while flying — motion trail
+  combo: 0, comboBest: 0,   // clean-skip streak → food/Big-Air multiplier
+  sweetSkips: 0,
+  flip: null, flipQueue: 0, tricks: 0,   // tap-triggered backflip trick
+  nearMisses: 0,
+  pearls: 0, freeBoostT: 0,
+  bigAir: 0, missionsCompleted: [],
 };
+const COMBO_TIER = 4;    // clean skips per multiplier step
+const MULT_MAX = 4;      // caps the multiplier at 1 + MULT_MAX = x5
+function mult() { return 1 + Math.min(MULT_MAX, Math.floor(run.combo / COMBO_TIER)); }
+// breaks the current combo (belly-flops, hazard hits) with a shared
+// popup+sfx — no-op (and silent) if there was nothing running to break
+function breakCombo(x, y) {
+  if (run.combo <= 0) return;
+  run.combo = 0;
+  popup('¡Combo roto! 💥', x, y + 40, { size: 20, color: '#ff8080' });
+  sfx.comboBreak();
+}
 const BIG_AIR_Y = 260; // world y a hop's apex must clear to score Big Air
-let bigAirCount = 0; // debug/test counter, not shown in-game
 
 let foods = [];        // {x, baseY, taken, phase}
 let nextFoodX = 0;
+let hazards = [];       // {type:'buoy'|'gull', x, y?, vx?, phase, hit, missCredited}
+let nextHazardX = HAZARD_START_X;
+let pearls = [];        // {x, y, taken, phase} — rare, placed in risky spots
+let nextPearlX = 3000;
+let chilis = [];        // {x, y, taken, phase} — rare full-refill + free-boost pickup
+let nextChiliX = 4200;
 let particles = [];    // {x,y,vx,vy,life,maxLife,size,color,grav,kind?}
 let popups = [];       // {str,x,y,t,life,size,color} — floating canvas text
 let foamPatches = [];  // {x, born, size} — persistent surface foam left by skips
@@ -956,6 +1178,80 @@ function spawnFoodAhead() {
   if (foods.length > 400) foods = foods.filter(f => f.x > cam.x - 600 && !f.taken);
 }
 
+/* ---------- hazards: buoys (surface) and seagulls (air) — first things
+   that can actually go wrong. Spacing tightens with distance the same way
+   wave roughness does, so a run gets more dangerous exactly as it gets
+   harder to skim. Clones spawnFoodAhead's distance-seeded spawner
+   pattern. ---------- */
+function spawnHazardsAhead() {
+  const horizon = cam.x + W * 2.2;
+  while (nextHazardX < horizon) {
+    const t = clamp(nextHazardX / OPEN_OCEAN, 0, 1);
+    const spacing = rand(lerp(1400, 700, t), lerp(1900, 1100, t));
+    if (Math.random() < 0.55) {
+      hazards.push({ type: 'buoy', x: nextHazardX, hit: false, missCredited: false, phase: rand(0, TAU) });
+    } else {
+      hazards.push({ type: 'gull', x: nextHazardX, y: rand(250, 450), vx: -40,
+        hit: false, missCredited: false, phase: rand(0, TAU) });
+    }
+    nextHazardX += spacing;
+  }
+  if (hazards.length > 200) hazards = hazards.filter(h => h.x > cam.x - 600);
+}
+function stepHazards(dt) {
+  for (const hz of hazards) if (hz.type === 'gull') hz.x += hz.vx * dt;
+}
+// current on-screen position — buoys bob on the wave itself, gulls have a
+// gentle wing-flap bob around their cruising altitude
+function hazardPos(hz, t) {
+  if (hz.type === 'buoy') {
+    const s = surfaceAt(hz.x, t);
+    return { x: hz.x, y: s.y + 16 + Math.sin(t * 1.6 + hz.phase) * 4 };
+  }
+  return { x: hz.x, y: hz.y + Math.sin(t * 2.4 + hz.phase) * 6 };
+}
+
+/* ---------- pearls: a sparse second currency tucked into risky spots —
+   high above a thermal, just past a hazard, or right on a crest tip —
+   so chasing one is a genuine choice, not a freebie ---------- */
+function spawnPearlsAhead() {
+  const horizon = cam.x + W * 2.2;
+  while (nextPearlX < horizon) {
+    const roll = Math.random();
+    let px = nextPearlX, py;
+    if (roll < 0.6) {                                        // high, near a thermal if one's close
+      const th = thermals.find((t) => Math.abs(t.x - nextPearlX) < 400);
+      if (th) px = th.x + rand(-50, 50);
+      py = BIG_AIR_Y + rand(60, 220);
+    } else if (roll < 0.85) {                                 // just past a hazard if one's close
+      const hz = hazards.find((h) => Math.abs(h.x - nextPearlX) < 500);
+      if (hz) px = hz.x + rand(90, 170);
+      py = rand(120, 260);
+    } else {                                                  // sitting right on a crest tip
+      let bestY = -Infinity, bestX = px;
+      for (let dx = -80; dx <= 80; dx += 16) {
+        const s = surfaceAt(px + dx, 0);
+        if (s.y > bestY) { bestY = s.y; bestX = px + dx; }
+      }
+      px = bestX; py = bestY + 44;
+    }
+    pearls.push({ x: px, y: py, taken: false, phase: rand(0, TAU) });
+    nextPearlX += rand(2000, 3000);
+  }
+  if (pearls.length > 60) pearls = pearls.filter((p) => p.x > cam.x - 600 && !p.taken);
+}
+
+/* ---------- chili pepper: rare full energy refill + a brief free boost
+   (no drain) — a breather, not a strategy, so it's spaced out generously */
+function spawnChilisAhead() {
+  const horizon = cam.x + W * 2.2;
+  while (nextChiliX < horizon) {
+    chilis.push({ x: nextChiliX, y: rand(80, 280), taken: false, phase: rand(0, TAU) });
+    nextChiliX += rand(3400, 4700);
+  }
+  if (chilis.length > 40) chilis = chilis.filter((c) => c.x > cam.x - 600 && !c.taken);
+}
+
 /* ---------- particles & popups ---------- */
 function puff(x, y, n, color, spd, grav = 900, size = 4, life = 0.6) {
   for (let i = 0; i < n; i++) {
@@ -975,6 +1271,12 @@ function sparkle(x, y, color = '#ffd93b') {
     particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
       life: 0.5, maxLife: 0.5, size: rand(2, 5), color, grav: 0 });
   }
+}
+// static expanding stroked ring — bat-contact impact feedback. Piggybacks on
+// the regular particle system (vx=0/vy=0/grav=0 so the default step logic
+// just ages it) with a 'ring' kind that drawParticles renders specially.
+function hitRing(x, y, { color = '#ffffff', size = 40, life = 0.3 } = {}) {
+  particles.push({ x, y, vx: 0, vy: 0, life, maxLife: life, size, color, grav: 0, kind: 'ring' });
 }
 // wobbling underwater bubble — rises, drifts, and pops into a tiny surface
 // fleck when it reaches surfaceAt(x,t) instead of just fading out in place
@@ -1077,6 +1379,7 @@ function stepBubbleColumns(dt) {
 
 /* ---------- run lifecycle ---------- */
 function startRun() {
+  if (!save.unlocked[fishDef.id]) fishDef = FISH[0]; // guard against a since-relocked selection
   const st = stats();
   state = 'ready';
   rollWaves();
@@ -1084,12 +1387,21 @@ function startRun() {
   run.x = BAT_X + 40; run.y = TOSS_Y; run.vx = 0; run.vy = 0;
   run.skips = 0; run.food = 0; run.dist = 0; run.sinkT = 0; run.spinning = 0;
   run.tossVy = 0; run.swingT = -1; run.lastBounceT = -1; run.zoneShown = 0; run.hopApex = TOSS_Y;
+  run.squashT = -1; run.trail = [];
+  run.combo = 0; run.comboBest = 0; run.sweetSkips = 0;
+  run.flip = null; run.flipQueue = 0; run.tricks = 0;
+  flyPressT = -1;
   run.maxEnergy = st.maxEnergy;
   run.energy = Math.min(run.maxEnergy, 55 + save.up.chili * 8);
   cam.x = 0; cam.y = 0;
   held = false;
   foods = []; nextFoodX = 800; particles = []; popups = [];
   gustEvents = []; nextGustX = 1500; thermals = []; nextThermalX = 2200; gustBoostT = 0;
+  hazards = []; nextHazardX = HAZARD_START_X;
+  pearls = []; nextPearlX = 3000;
+  chilis = []; nextChiliX = 4200;
+  run.nearMisses = 0; run.pearls = 0; run.freeBoostT = 0;
+  run.bigAir = 0; run.missionsCompleted = [];
   showScreen(null);
   hud(true);
   let windHint = '';
@@ -1128,9 +1440,16 @@ function swing() {
   state = 'fly';
   held = false;                       // require a fresh press for boosting
   run.hopApex = run.y;
+  run.squashT = time;
   sfx.crack(q);
   puff(run.x, run.y, 12, '#ffe9b0', 300, 800, 4, 0.4);
-  setHint('Hold anywhere to BOOST 🌶️ — golden snacks refill energy!');
+  hitRing(run.x, run.y, { color: perfect ? '#ffd93b' : '#ffffff', size: perfect ? 58 : 38, life: 0.32 });
+  if (!REDUCED_MOTION) {
+    hitstopT = 0.05 * (0.6 + q);
+    camShake = { amp: 6 + 10 * q, t: 0 };
+    puff(BAT_X - 34, 44, 7, '#e0b95e', 170, 650, 3, 0.4);   // sand kicked up at the luchador's feet
+  }
+  setHint('Hold to BOOST 🌶️, tap to flip 🌀 — golden snacks refill energy!');
 }
 function flop(msg) {
   popup(msg, run.x, run.y + 50, { size: 24, color: '#ffb0c8' });
@@ -1146,31 +1465,125 @@ function beginSink() {
   silenceWindAudio();
   splash(run.x, surfaceAt(run.x, time).y, 260);
 }
-function endRun() {
-  state = 'done';
-  hud(false);
-  save.runs++;
-  const m = Math.round(run.dist / PX_PER_M);
-  const isBest = m > save.best;
-  if (isBest) save.best = m;
-  persist();
-  document.getElementById('resTitle').textContent = pickTitle(m, isBest);
-  document.getElementById('resDist').textContent = m + ' m';
-  document.getElementById('resBestNote').innerHTML = isBest
-    ? '<span class="newbest">🏆 NEW BEST!</span>' : `Best: ${save.best} m`;
-  document.getElementById('resLine').textContent =
-    `${run.skips} skip${run.skips === 1 ? '' : 's'} · 🟡 ${run.food} fish food` +
-    (run.dist > OPEN_OCEAN ? ' · you reached the open ocean! 🌑🌊' : '');
-  showScreen('results');
-  if (isBest && m > 0) sfx.best();
+// grants any fish whose milestone unlock condition this run just satisfied
+// (pearl-cost fish are a manual shop purchase instead — see buildMenu) and
+// returns the list of newly-unlocked fish for the results screen
+function checkUnlocks() {
+  const newly = [];
+  for (const f of FISH) {
+    if (save.unlocked[f.id]) continue;
+    const u = f.unlock;
+    if ((u.type === 'best' && save.best >= u.m) || (u.type === 'skips' && run.skips >= u.n)) {
+      save.unlocked[f.id] = true;
+      newly.push(f);
+    }
+  }
+  return newly;
 }
-function pickTitle(m, best) {
+/* ---------- results: score, medals, records ---------- */
+// run score = distance + weighted skill stats — skips and sweet skips are
+// common so they're worth less each; tricks and near-misses take real
+// risk, so they're worth more
+function runScore(m) {
+  return m + run.skips * 4 + run.tricks * 25 + run.sweetSkips * 10 + run.nearMisses * 15;
+}
+const MEDALS = [
+  { id: 'gold', score: 900, c1: '#fff3b0', c2: '#e0a838', ribbon: '#d81b74' },
+  { id: 'silver', score: 450, c1: '#f4f6f8', c2: '#9aa5ad', ribbon: '#43c6e0' },
+  { id: 'bronze', score: 150, c1: '#e8b98a', c2: '#a9713a', ribbon: '#59c9a5' },
+];
+function medalFor(score) {
+  for (const md of MEDALS) if (score >= md.score) return md;
+  return null;
+}
+function drawMedal(medal) {
+  const cv = $('medalCanvas'), c = cv.getContext('2d');
+  c.clearRect(0, 0, cv.width, cv.height);
+  if (!medal) return;
+  const cx = cv.width / 2, cy = 32, r = 25;
+  c.lineWidth = 2.5; c.strokeStyle = FISH_INK;
+  c.fillStyle = medal.ribbon;
+  c.beginPath(); c.moveTo(cx - 13, cy + 8); c.lineTo(cx - 19, cy + 56); c.lineTo(cx - 7, cy + 44); c.closePath(); c.fill(); c.stroke();
+  c.beginPath(); c.moveTo(cx + 13, cy + 8); c.lineTo(cx + 19, cy + 56); c.lineTo(cx + 7, cy + 44); c.closePath(); c.fill(); c.stroke();
+  const g = c.createRadialGradient(cx - 8, cy - 8, 4, cx, cy, r);
+  g.addColorStop(0, medal.c1); g.addColorStop(1, medal.c2);
+  c.fillStyle = g;
+  c.beginPath(); c.arc(cx, cy, r, 0, TAU); c.fill(); c.stroke();
+  c.fillStyle = 'rgba(255,255,255,0.55)';
+  c.beginPath();
+  for (let i = 0; i < 5; i++) {
+    const a = -Math.PI / 2 + i * (TAU / 5), a2 = a + Math.PI / 5;
+    const x1 = cx + Math.cos(a) * 12, y1 = cy + Math.sin(a) * 12;
+    const x2 = cx + Math.cos(a2) * 5, y2 = cy + Math.sin(a2) * 5;
+    if (i === 0) c.moveTo(x1, y1); else c.lineTo(x1, y1);
+    c.lineTo(x2, y2);
+  }
+  c.closePath(); c.fill();
+}
+function pickTitle(m, best, medal) {
+  if (medal?.id === 'gold') return '¡Leyenda Dorada! 🥇';
   if (best && m > 0) return 'Legend of the Sea!';
+  if (medal?.id === 'silver') return '¡Plata brillante! 🥈';
+  if (medal?.id === 'bronze') return '¡Bronce! Nice one! 🥉';
   if (m < 40) return 'Splashdown!';
   if (m < 150) return 'Not bad!';
   if (m < 350) return '¡Órale! Nice one!';
   if (m < 550) return 'The seagulls are impressed!';
   return 'Absolutely oceanic!';
+}
+function endRun() {
+  state = 'done';
+  hud(false);
+  save.runs++;
+  checkMissions(); // one more pass, catching the last instant before landing
+  const m = Math.round(run.dist / PX_PER_M);
+  const isBest = m > save.best;
+  if (isBest) save.best = m;
+  const newlyUnlocked = checkUnlocks();
+
+  // record-tracking: a fresh personal best on any of these tags that row
+  const statRecords = { skips: run.skips, tricks: run.tricks, sweetSkips: run.sweetSkips,
+    nearMisses: run.nearMisses, comboBest: run.comboBest, bigAir: run.bigAir };
+  const isNewRecord = {};
+  for (const key in statRecords) {
+    if (statRecords[key] > save.records[key]) { save.records[key] = statRecords[key]; isNewRecord[key] = true; }
+  }
+
+  const score = runScore(m);
+  const medal = medalFor(score);
+  persist();
+
+  document.getElementById('resTitle').textContent = pickTitle(m, isBest, medal);
+  document.getElementById('resDist').textContent = m + ' m';
+  document.getElementById('resBestNote').innerHTML = isBest
+    ? '<span class="newbest">🏆 NEW BEST!</span>' : `Best: ${save.best} m`;
+  drawMedal(medal);
+
+  const bestMult = 1 + Math.min(MULT_MAX, Math.floor(run.comboBest / COMBO_TIER));
+  const row = (label, value, record) =>
+    `<div>${label}</div><b>${value}${record ? '<span class="newrecord">NEW RECORD</span>' : ''}</b>`;
+  const rows = [
+    ['Skips', `${run.skips} <small>(best combo ×${bestMult})</small>`, isNewRecord.skips || isNewRecord.comboBest],
+    ['Tricks', run.tricks, isNewRecord.tricks],
+    ['Sweet skips', run.sweetSkips, isNewRecord.sweetSkips],
+    ['Near-misses', run.nearMisses, isNewRecord.nearMisses],
+    ['Big Air', run.bigAir, isNewRecord.bigAir],
+    ['Food', `🟡 ${run.food}`, false],
+    ['Pearls', `🦪 ${run.pearls}`, false],
+  ];
+  document.getElementById('resBreakdown').innerHTML = rows
+    .map(([label, value, record], i) =>
+      `<div class="row" style="animation-delay:${(i * 0.07).toFixed(2)}s">${row(label, value, record)}</div>`)
+    .join('');
+
+  document.getElementById('resLine').textContent =
+    (run.dist > OPEN_OCEAN ? 'You reached the open ocean! 🌑🌊 ' : '') +
+    (newlyUnlocked.length ? `¡Nuevo pez! ${newlyUnlocked.map((f) => f.name).join(', ')} 🐟✨ ` : '') +
+    (run.missionsCompleted.length ? `✔ ${run.missionsCompleted.map((mm) => mm.text).join(', ')}` : '');
+  showScreen('results');
+  if (newlyUnlocked.length) sfx.unlock();
+  else if (medal) sfx.medal();
+  else if (isBest && m > 0) sfx.best();
 }
 
 /* ---------- physics ---------- */
@@ -1189,17 +1602,41 @@ function stepPhysics(dt) {
     // chili boost while held: speeds you up along your current heading AND
     // pulls you down into a dive — the longer you hold, the sooner/steeper
     // you come down, so you can choose where on the wave you land instead
-    // of always riding out the same arc
-    if (held && run.energy > 0) {
+    // of always riding out the same arc. Gated behind TAP_MS so a quick tap
+    // (which triggers a flip instead, on release) doesn't also nibble energy.
+    // A chili-pepper pickup grants a few seconds of the same boost for free
+    // (run.freeBoostT), no hold or energy required.
+    if (run.freeBoostT > 0) run.freeBoostT = Math.max(0, run.freeBoostT - dt);
+    const boosting = run.freeBoostT > 0 || (held && run.energy > 0 && time - flyPressT >= TAP_MS);
+    if (boosting) {
       const sp = Math.hypot(run.vx, run.vy) || 1;
       run.vx += (run.vx / sp) * BOOST_ACC * dt;
       run.vy += (run.vy / sp) * BOOST_ACC * dt - BOOST_DIVE * dt;
-      run.energy = Math.max(0, run.energy - BOOST_DRAIN * dt);
+      if (run.freeBoostT <= 0) run.energy = Math.max(0, run.energy - BOOST_DRAIN * dt);
       if (time - run.boostSfxT > 0.1) { sfx.boost(); run.boostSfxT = time; }
-      if (Math.random() < dt * 40) particles.push({
+      // the flame itself is drawn (drawBoostFlame); just a few loose embers
+      // kicking off it for extra spice
+      if (Math.random() < dt * 12) particles.push({
         x: run.x - rand(10, 26), y: run.y + rand(-8, 8),
         vx: -run.vx * 0.15, vy: rand(-30, 30),
         life: 0.35, maxLife: 0.35, size: rand(2, 5), color: '#ff9800', grav: 0 });
+    }
+
+    // backflip trick: a self-contained rotation clock, independent of the
+    // fish's velocity-aligned flight angle — completing one pays out food
+    // and combo; landing mid-rotation is handled as a belly-flop below
+    if (run.flip) {
+      run.flip.t += dt;
+      if (run.flip.t >= run.flip.dur) {
+        run.tricks++;
+        const gain = 2 * mult();
+        run.food += gain; save.food += gain;
+        run.combo += 2; run.comboBest = Math.max(run.comboBest, run.combo);
+        popup('¡Ole! Backflip 🌀', run.x, run.y + 50, { size: 22, color: '#ffd93b' });
+        sfx.trick();
+        if (run.flipQueue > 0) { run.flipQueue--; run.flip = { t: 0, dur: FLIP_DUR }; }
+        else run.flip = null;
+      }
     }
 
     // air drag + gravity (+ glide lift for the flying fish) — computed
@@ -1229,6 +1666,15 @@ function stepPhysics(dt) {
     run.wiggle += dt * (6 + Math.hypot(run.vx, run.vy) * 0.004);
     updateWindAudio(rsp, run.y);
 
+    // motion trail: sample position at a fixed cadence (not every physics
+    // step — that'd bunch 22 points into a fraction of a second) so the
+    // ribbon spans a readable stretch of recent flight
+    const lastTrail = run.trail[run.trail.length - 1];
+    if (!lastTrail || time - lastTrail.t >= TRAIL_DT) {
+      run.trail.push({ x: run.x, y: run.y, t: time, sp: Math.hypot(run.vx, run.vy) });
+      if (run.trail.length > TRAIL_MAX) run.trail.shift();
+    }
+
     // gust fronts: crossing an untriggered wall gives a temporary wind spike
     for (const gEvt of gustEvents) {
       if (!gEvt.triggered && run.x > gEvt.x) {
@@ -1256,14 +1702,77 @@ function stepPhysics(dt) {
       }
       if (d < st.magnetR) {
         f.taken = true;
-        run.food++; save.food++;
+        const gain = mult();
+        run.food += gain; save.food += gain;
         run.energy = Math.min(run.maxEnergy, run.energy + ENERGY_FOOD);
         const spd = Math.hypot(run.vx, run.vy) || 1;
         run.vx += (run.vx / spd) * 90;      // small free kick
         run.vy += (run.vy / spd) * 90 + 40;
         sparkle(f.x, fy);
-        popup('+⚡', f.x, fy + 16, { size: 16, color: '#ffd93b', life: 0.7 });
+        popup(gain > 1 ? `+${gain}⚡` : '+⚡', f.x, fy + 16, { size: 16, color: '#ffd93b', life: 0.7 });
         sfx.collect();
+      }
+    }
+
+    // hazards: a hit slows/knocks the fish and breaks the combo; grazing
+    // close without touching one is rewarded once as a near-miss — courage
+    // pays, but only if it doesn't turn into contact
+    for (const hz of hazards) {
+      if (hz.hit || Math.abs(hz.x - run.x) > 400) continue;
+      const p = hazardPos(hz, time);
+      const d = Math.hypot(p.x - run.x, p.y - run.y);
+      if (d < HAZARD_HIT_R[hz.type]) {
+        hz.hit = true;
+        breakCombo(run.x, run.y);
+        if (!REDUCED_MOTION) camShake = { amp: 8, t: 0 };
+        if (hz.type === 'buoy') {
+          run.vx *= 0.5;
+          run.vy = Math.max(run.vy, 220);
+          puff(p.x, p.y, 10, '#8a5a2b', 260, 900, 4, 0.5);
+          popup('¡BONK! 🥊', run.x, run.y + 40, { size: 22, color: '#ffb0c8' });
+          sfx.bonk();
+        } else {
+          run.vy -= 250;
+          puff(p.x, p.y, 8, '#ffffff', 220, 500, 3, 0.5);
+          popup('¡Squawk! 🕊️', run.x, run.y + 40, { size: 22, color: '#ffb0c8' });
+          sfx.squawk();
+        }
+      } else if (!hz.missCredited && d < NEAR_MISS_R) {
+        hz.missCredited = true;
+        const gain = 3 * mult();
+        run.food += gain; save.food += gain;
+        run.combo++; run.comboBest = Math.max(run.comboBest, run.combo);
+        run.nearMisses++;
+        popup('¡Cerquita! ✨', p.x, p.y + 30, { size: 18, color: '#8ef0ff' });
+        sfx.nearMiss();
+      }
+    }
+
+    // pearls: direct-contact only, no magnet — finding one is the reward,
+    // not sweeping it up incidentally
+    for (const p of pearls) {
+      if (p.taken || Math.abs(p.x - run.x) > 200) continue;
+      const py = p.y + Math.sin(time * 2.2 + p.phase) * 5;
+      if (Math.hypot(p.x - run.x, py - run.y) < 24) {
+        p.taken = true;
+        save.pearls++; run.pearls++;
+        sparkle(p.x, py, '#cfe0ff');
+        popup('+1 🦪', p.x, py + 18, { size: 18, color: '#cfe0ff', life: 0.9 });
+        sfx.pearl();
+      }
+    }
+
+    // chili pepper: full energy refill + a few seconds of free boost
+    for (const c of chilis) {
+      if (c.taken || Math.abs(c.x - run.x) > 200) continue;
+      const cy = c.y + Math.sin(time * 2 + c.phase) * 6;
+      if (Math.hypot(c.x - run.x, cy - run.y) < 22) {
+        c.taken = true;
+        run.energy = run.maxEnergy;
+        run.freeBoostT = 1.2;
+        sparkle(c.x, cy, '#ff7a1a');
+        popup('🌶️ FULL BOOST!', c.x, cy + 20, { size: 20, color: '#ff9800' });
+        sfx.chiliPickup();
       }
     }
 
@@ -1279,20 +1788,44 @@ function stepPhysics(dt) {
         const speed = Math.hypot(run.vx, run.vy);
         const steep = -vn / (speed || 1);            // 1 = dead-on plunge
         let e = st.bounce;
-        if (steep > 0.8) e *= clamp(1.55 - steep, 0.3, 1); // belly-flop penalty
+        // a grazing landing on a genuine downslope, in the direction of
+        // travel (s.slope < 0 means the surface descends as x increases) —
+        // rewards aiming the boost-dive at a wave face instead of just
+        // riding out whatever arc you happened to launch
+        const sweet = steep < SWEET_SKIP_STEEP && s.slope < -SWEET_SKIP_SLOPE && run.vx > 0;
+        // touching down mid-rotation (not right at launch or right before
+        // landing, where it barely reads as a flip) is treated the same as
+        // a bad belly-flop — a flat penalty rather than the steep-scaled
+        // one, since a flip can land at any contact angle
+        const flipFrac = run.flip ? run.flip.t / run.flip.dur : 0;
+        const midFlip = run.flip && flipFrac > 0.15 && flipFrac < 0.85;
+        if (midFlip) {
+          e *= 0.55;
+          breakCombo(run.x, run.y);
+          popup('¡Panza! 💥', run.x, run.y + 40, { size: 20, color: '#ff8080' });
+          run.flip = null; run.flipQueue = 0;
+        } else if (steep > 0.8) { e *= clamp(1.55 - steep, 0.3, 1); breakCombo(run.x, run.y); } // belly-flop penalty
         // decompose, reflect, add kick from the moving wave surface
         const tx = run.vx - vn * nx, ty = run.vy - vn * ny;
         run.vx = tx * 0.955 - vn * e * nx;
         run.vy = ty * 0.955 - vn * e * ny + Math.max(0, s.vy) * 0.6 * st.waveGrip;
         run.y = s.y + 0.5;
+        if (sweet) {
+          run.vx *= 1.06;
+          run.combo += 2; run.comboBest = Math.max(run.comboBest, run.combo);
+          run.sweetSkips = (run.sweetSkips || 0) + 1;
+          popup('¡Suave! ✨', run.x, run.y + 40, { size: 20, color: '#8ef0ff' });
+          sparkle(run.x, run.y, '#8ef0ff');
+          sfx.surf();
+        }
 
         // Big Air: reward the hop that just ended if its apex cleared
         // BIG_AIR_Y, rewarding the risky high arcs wind makes attractive —
         // then start tracking the next hop fresh
         if (run.hopApex > BIG_AIR_Y) {
-          const bonus = clamp(Math.round((run.hopApex - BIG_AIR_Y) / 45), 1, 6);
+          const bonus = clamp(Math.round((run.hopApex - BIG_AIR_Y) / 45), 1, 6) * mult();
           run.food += bonus; save.food += bonus;
-          bigAirCount++;
+          run.bigAir++;
           popup(`Big Air! +${bonus}🟡`, run.x, run.hopApex, { size: 22, color: '#ffd93b' });
           sfx.collect();
         }
@@ -1309,6 +1842,14 @@ function stepPhysics(dt) {
           if (time - run.lastBounceT > 0.09) {
             run.lastBounceT = time;
             run.skips++;
+            const tierBefore = Math.floor(run.combo / COMBO_TIER);
+            run.combo++;
+            run.comboBest = Math.max(run.comboBest, run.combo);
+            const tierAfter = Math.floor(run.combo / COMBO_TIER);
+            if (tierAfter > tierBefore && tierAfter <= MULT_MAX) {
+              popup(`COMBO ×${1 + tierAfter}!`, run.x, run.y + 60, { size: 24, color: '#ffd93b' });
+              sfx.combo(tierAfter);
+            }
             splash(run.x, s.y, speed * (0.4 + steep));
             for (let k = 0; k < 4; k++) spawnBubble(run.x + rand(-10, 10), s.y - rand(4, 20), { life: 0.6, minSize: 1.5, maxSize: 3 });
             foamPatches.push({ x: run.x, born: time, size: rand(16, 26) });
@@ -1320,6 +1861,8 @@ function stepPhysics(dt) {
         run.y = s.y + 0.5; // riding up the back of a wave
       }
     }
+
+    checkMissions();
   }
 
   if (state === 'sink') {
@@ -1352,11 +1895,19 @@ function stepCamera(dt) {
   const k = 1 - Math.pow(0.0018, dt);
   cam.x = lerp(cam.x, tx, k);
   cam.y = lerp(cam.y, ty, k);
+  if (camShake.amp > 0) {
+    camShake.t += dt;
+    camShake.amp = Math.max(0, camShake.amp - dt * 42); // quick decay, ~0.15-0.3s
+  }
 }
 let menuWrapLimit = 4200;
 const seaLine = () => H * 0.66;
-const w2sx = (x) => x - cam.x;
-const w2sy = (y) => seaLine() - (y - cam.y);
+// a decaying screen shake (set by big bat contacts) offsets every drawn
+// layer identically since it's baked into the shared world->screen mapping
+function shakeX() { return camShake.amp > 0 ? (hash01(Math.floor(camShake.t * 60) * 3.7) - 0.5) * 2 * camShake.amp : 0; }
+function shakeY() { return camShake.amp > 0 ? (hash01(Math.floor(camShake.t * 60) * 9.1 + 5) - 0.5) * 2 * camShake.amp : 0; }
+const w2sx = (x) => x - cam.x + shakeX();
+const w2sy = (y) => seaLine() - (y - cam.y) + shakeY();
 
 /* ---------- drawing ---------- */
 function drawSky(pal) {
@@ -1517,113 +2068,384 @@ function drawBeach() {
   ctx.lineCap = 'butt';
 }
 
+// swing timeline breakpoints (seconds since run.swingT was zeroed at contact)
+const SWING_COIL_END = 0.06, SWING_STRIKE_END = 0.14, SWING_SETTLE_END = 0.45;
+
+// derives every swing-driven pose value from run.swingT/state in one place,
+// so the arm-swing angle, the bat's own whip rotation, the crouch depth and
+// the torso lean all stay in sync instead of drifting apart
+function luchadorPose() {
+  let armA = -1.75, batA = 0.6, crouch = 0.15, lean = 0, sway = 0;
+  if (state === 'ready' || state === 'toss') {
+    crouch = 0.35 + Math.sin(time * 3) * 0.03;
+    lean = Math.sin(time * 1.6) * 0.03;
+    sway = Math.sin(time * 1.6) * 3;
+    armA = -1.9 + Math.sin(time * 6) * 0.04;
+    batA = -2.9 + Math.sin(time * 6) * 0.04;
+  }
+  if (run.swingT >= 0) {
+    const t = run.swingT;
+    if (t < SWING_COIL_END) {                              // deepen the coil
+      const tt = t / SWING_COIL_END;
+      armA = lerp(-1.9, -2.2, tt); batA = lerp(-2.9, -3.15, tt);
+      crouch = lerp(0.35, 0.5, tt); lean = lerp(0.03, -0.14, tt);
+    } else if (t < SWING_STRIKE_END) {                      // the strike
+      const tt = (t - SWING_COIL_END) / (SWING_STRIKE_END - SWING_COIL_END);
+      armA = lerp(-2.2, -0.25, tt); batA = lerp(-3.15, 0.6, tt);
+      crouch = lerp(0.5, 0.05, tt); lean = lerp(-0.14, 0.28, tt);
+    } else if (t < SWING_SETTLE_END) {                      // elastic follow-through
+      const tt = (t - SWING_STRIKE_END) / (SWING_SETTLE_END - SWING_STRIKE_END);
+      const battEased = tt < 0.35 ? lerp(0.6, 1.1, tt / 0.35) : lerp(1.1, 0.6, (tt - 0.35) / 0.65);
+      armA = lerp(-0.25, -0.55, clamp(tt, 0, 1)); batA = battEased;
+      crouch = lerp(0.05, 0.15, clamp(tt, 0, 1)); lean = lerp(0.28, 0.05, clamp(tt, 0, 1));
+    } else {
+      armA = -0.55; batA = 0.6; crouch = 0.15; lean = 0.05;
+    }
+  }
+  return { armA, batA, crouch, lean, sway };
+}
+
+// tapered two-point limb (shoulder/hip -> hand/foot) with a perpendicular
+// bend offset for a bent-elbow/bent-knee silhouette, drawn as one filled path
+function drawLimb(x0, y0, x1, y1, bend, w0, w1, color) {
+  const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+  const dx = x1 - x0, dy = y1 - y0, len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len, ny = dx / len;
+  const kx = mx + nx * bend, ky = my + ny * bend;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(x0 - (ny * w0), y0 + (nx * w0));
+  ctx.quadraticCurveTo(kx - ny * (w0 + w1) / 2, ky + nx * (w0 + w1) / 2, x1 - ny * w1, y1 + nx * w1);
+  ctx.lineTo(x1 + ny * w1, y1 - nx * w1);
+  ctx.quadraticCurveTo(kx + ny * (w0 + w1) / 2, ky - nx * (w0 + w1) / 2, x0 + ny * w0, y0 - nx * w0);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+}
+
 function drawLuchador() {
   if (cam.x > 1100) return;
-  const x = w2sx(BAT_X - 34), y = w2sy(44); // feet on the sand
+  const pose = luchadorPose();
+  const x = w2sx(BAT_X - 34) + pose.sway, y = w2sy(44); // feet on the sand
   ctx.save();
   ctx.translate(x, y);
-  ctx.lineWidth = 2.5; ctx.strokeStyle = '#1e2a3a';
+  ctx.lineWidth = 2.5; ctx.strokeStyle = FISH_INK;
 
-  // legs
-  ctx.fillStyle = '#3b3b57';
-  ctx.fillRect(-12, -26, 10, 26);
-  ctx.fillRect(4, -26, 10, 26);
-  // poncho body
-  ctx.fillStyle = '#43c6e0';
-  ctx.beginPath();
-  ctx.moveTo(0, -70); ctx.lineTo(-26, -22); ctx.lineTo(26, -22);
-  ctx.closePath(); ctx.fill(); ctx.stroke();
-  ctx.strokeStyle = '#f0567e'; ctx.lineWidth = 4;
-  ctx.beginPath(); ctx.moveTo(-18, -36); ctx.lineTo(18, -36); ctx.stroke();
-  ctx.strokeStyle = '#1e2a3a'; ctx.lineWidth = 2.5;
-  // head with luchador mask
-  ctx.fillStyle = '#d81b74';
-  ctx.beginPath(); ctx.arc(0, -84, 16, 0, TAU); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = '#ffd93b';
-  ctx.beginPath(); ctx.ellipse(-6, -86, 4.5, 6, 0, 0, TAU); ctx.ellipse(6, -86, 4.5, 6, 0, 0, TAU); ctx.fill();
-  ctx.fillStyle = '#1e2a3a';
-  ctx.beginPath(); ctx.arc(-6, -86, 2, 0, TAU); ctx.arc(6, -86, 2, 0, TAU); ctx.fill();
-  // sombrero
-  ctx.fillStyle = '#e0a838';
-  ctx.beginPath(); ctx.ellipse(0, -96, 30, 8, -0.08, 0, TAU); ctx.fill(); ctx.stroke();
-  ctx.beginPath(); ctx.ellipse(0, -103, 13, 9, -0.08, 0, TAU); ctx.fill(); ctx.stroke();
+  // ---- legs: bent-knee batter stance, deepening into the coil ----
+  const hipY = -26 + pose.crouch * 9, stanceOut = 11 + pose.crouch * 3;
+  drawLimb(-stanceOut, hipY, -stanceOut - 3, 0, -5 - pose.crouch * 5, 6.5, 5, LUCHA.pants);
+  drawLimb(stanceOut, hipY, stanceOut + 3, 0, 5 + pose.crouch * 5, 6.5, 5, LUCHA.pants);
+  ctx.fillStyle = LUCHA.boots;
+  ctx.beginPath(); ctx.ellipse(-stanceOut - 4, 1, 8, 4, 0, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(stanceOut + 4, 1, 8, 4, 0, 0, TAU); ctx.fill(); ctx.stroke();
 
-  // arms + bat: wind-up while waiting, fast forward swing on hit
-  let batA = -2.2;                                 // resting over the shoulder
-  if (state === 'toss') batA = -2.5 + Math.sin(time * 10) * 0.06;
-  if (run.swingT >= 0 && run.swingT < 0.22) batA = lerp(-2.5, 0.6, run.swingT / 0.22);
-  else if (run.swingT >= 0.22) batA = 0.6;
-  ctx.strokeStyle = '#b3125c'; ctx.lineWidth = 7; ctx.lineCap = 'round';
-  const hx = 20, hy = -58;
-  ctx.beginPath(); ctx.moveTo(4, -54); ctx.lineTo(hx, hy); ctx.stroke();
-  // bat
+  // ---- torso: rounded serape, hem drawn as a wavy line so it flutters
+  // with a bit of self-motion plus the day's actual wind ----
+  const breathe = (state === 'ready' || state === 'toss') ? 1 + Math.sin(time * 1.8) * 0.012 : 1;
   ctx.save();
-  ctx.translate(hx, hy);
-  ctx.rotate(batA);
-  ctx.fillStyle = '#c98d4a'; ctx.strokeStyle = '#1e2a3a'; ctx.lineWidth = 2.5;
-  ctx.beginPath(); ctx.roundRect(-4, -60, 9, 62, 4); ctx.fill(); ctx.stroke();
+  ctx.rotate(pose.lean * 0.4);
+  ctx.scale(1, breathe);
+  ctx.fillStyle = LUCHA.serape;
+  ctx.beginPath();
+  ctx.moveTo(0, -72);
+  ctx.quadraticCurveTo(-6, -48, -25, hipY + 6);
+  ctx.quadraticCurveTo(0, hipY + 15, 25, hipY + 6);
+  ctx.quadraticCurveTo(6, -48, 0, -72);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  const gust = windAt(BAT_X, 80, time) * 0.0006;
+  ctx.strokeStyle = LUCHA.serapeStripe; ctx.lineWidth = 3.5;
+  ctx.beginPath();
+  for (let i = -2; i <= 2; i++) {
+    const hx2 = i * 10, hy2 = hipY + 4 + Math.sin(time * 2.4 + i) * 1.5 + gust * (i * 6);
+    if (i === -2) ctx.moveTo(hx2, hy2); else ctx.lineTo(hx2, hy2);
+  }
+  ctx.stroke();
+  ctx.strokeStyle = LUCHA.serapeStripe2; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(-18, -38); ctx.lineTo(18, -38); ctx.stroke();
   ctx.restore();
-  ctx.lineCap = 'butt';
+
+  // ---- back arm + bat: swings from the shoulder (pose.armA), the bat
+  // itself whips within the grip (pose.batA) for a secondary snap ----
+  const shoulderB = { x: 7, y: -55 };
+  const grip = { x: shoulderB.x + Math.cos(pose.armA) * 27, y: shoulderB.y + Math.sin(pose.armA) * 27 };
+  const elbowBendB = run.swingT >= 0 && run.swingT < SWING_STRIKE_END ? 10 : 5;
+  drawLimb(shoulderB.x, shoulderB.y, grip.x, grip.y, elbowBendB, 5.5, 4, LUCHA.skin);
+
+  // front (off-hand) arm reaching to the same grip point for a two-handed hold
+  const shoulderF = { x: -7, y: -50 };
+  drawLimb(shoulderF.x, shoulderF.y, grip.x, grip.y, -8, 5, 4, LUCHA.skin);
+
+  // motion smear: a few fading ghost bats sampled a beat earlier, only
+  // during the strike window when the bat is moving fastest
+  if (run.swingT >= SWING_COIL_END && run.swingT < SWING_STRIKE_END + 0.03) {
+    for (let i = 1; i <= 2; i++) {
+      const ghostT = Math.max(0, run.swingT - i * 0.028);
+      if (ghostT < SWING_COIL_END) continue;
+      const gtt = (ghostT - SWING_COIL_END) / (SWING_STRIKE_END - SWING_COIL_END);
+      const ga = lerp(-3.15, 0.6, clamp(gtt, 0, 1));
+      ctx.save();
+      ctx.globalAlpha = 0.16 / i;
+      ctx.translate(grip.x, grip.y);
+      ctx.rotate(ga);
+      ctx.fillStyle = LUCHA.bat;
+      ctx.beginPath(); ctx.roundRect(-4, -58, 8, 60, 4); ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // bat + hands
+  ctx.save();
+  ctx.translate(grip.x, grip.y);
+  ctx.rotate(pose.batA);
+  ctx.fillStyle = LUCHA.bat; ctx.strokeStyle = FISH_INK; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.roundRect(-4, -58, 8, 60, 4); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = '#8a5a2b'; ctx.lineWidth = 1.4;
+  for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.moveTo(-4, -6 + i * 5); ctx.lineTo(4, -6 + i * 5); ctx.stroke(); }
   ctx.restore();
+  ctx.fillStyle = LUCHA.glove; ctx.strokeStyle = FISH_INK; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(grip.x, grip.y, 5.5, 0, TAU); ctx.fill(); ctx.stroke();
+
+  // ---- head with luchador mask; pupils track the fish while it's up ----
+  ctx.lineWidth = 2.5;
+  ctx.fillStyle = LUCHA.mask;
+  ctx.beginPath(); ctx.arc(0, -84, 16, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = LUCHA.maskTrim2; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.arc(0, -84, 12.5, Math.PI * 0.15, Math.PI * 0.85); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-16, -84); ctx.lineTo(-20, -80);
+  ctx.moveTo(16, -84); ctx.lineTo(20, -80);
+  ctx.stroke();
+  ctx.strokeStyle = FISH_INK; ctx.lineWidth = 2.5;
+  let pupilOff = { x: 0, y: -1 };
+  if (state === 'ready' || state === 'toss') {
+    const wdx = run.x - (BAT_X - 34), wdy = run.y - 44;
+    const ang = Math.atan2(-wdy, wdx);
+    pupilOff = { x: Math.cos(ang), y: Math.sin(ang) };
+  }
+  ctx.fillStyle = LUCHA.maskTrim;
+  ctx.beginPath(); ctx.ellipse(-6, -86, 4.5, 6, 0, 0, TAU); ctx.ellipse(6, -86, 4.5, 6, 0, 0, TAU); ctx.fill();
+  ctx.fillStyle = FISH_INK;
+  ctx.beginPath();
+  ctx.arc(-6 + pupilOff.x * 1.6, -86 + pupilOff.y * 2, 2, 0, TAU);
+  ctx.arc(6 + pupilOff.x * 1.6, -86 + pupilOff.y * 2, 2, 0, TAU);
+  ctx.fill();
+  ctx.strokeStyle = '#7a1f3d'; ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(-6, -74); ctx.quadraticCurveTo(0, -71, 6, -74);
+  ctx.stroke();
+
+  // ---- sombrero with a curved brim and two swaying tassels ----
+  ctx.strokeStyle = FISH_INK; ctx.lineWidth = 2.5;
+  ctx.fillStyle = LUCHA.hatBrim;
+  ctx.beginPath(); ctx.ellipse(0, -96, 30, 8, -0.08, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = LUCHA.hatCrown;
+  ctx.beginPath(); ctx.ellipse(0, -103, 13, 9, -0.08, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = LUCHA.hatBand; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.ellipse(0, -100, 12.5, 3.2, -0.08, 0, Math.PI); ctx.stroke();
+  ctx.strokeStyle = LUCHA.hatBand; ctx.lineWidth = 2;
+  for (const side of [-1, 1]) {
+    const tx0 = side * 27, ty0 = -93;
+    const sway2 = Math.sin(time * 2.2 + side * 1.7) * 3;
+    ctx.beginPath();
+    ctx.moveTo(tx0, ty0);
+    ctx.quadraticCurveTo(tx0 + side * 2 + sway2 * 0.5, ty0 + 8, tx0 + side * 1 + sway2, ty0 + 15);
+    ctx.stroke();
+    ctx.fillStyle = LUCHA.hatBand;
+    ctx.beginPath(); ctx.arc(tx0 + side * 1 + sway2, ty0 + 15, 1.8, 0, TAU); ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+// per-shape body half-height as a fraction of f.size — each of the six
+// silhouettes gets its own proportions instead of sharing one ellipse
+const FISH_HH = { slim: 0.44, wing: 0.48, puff: 0.86, dart: 0.42, tank: 0.62, sail: 0.46 };
+const FISH_INK = '#1e2a3a';
+const SIL_FILL = '#1c2b40', SIL_INK = '#111c2c'; // locked-card silhouette colors
+
+// 5-stop body shading: dark back → rim highlight → flank → hard belly line
+function fishBodyGrad(c, f, Hh) {
+  const g = c.createLinearGradient(0, -Hh, 0, Hh);
+  g.addColorStop(0, mixHex(f.colors.body, FISH_INK, 0.38));
+  g.addColorStop(0.16, mixHex(f.colors.body, '#ffffff', 0.3));
+  g.addColorStop(0.34, f.colors.body);
+  g.addColorStop(0.62, f.colors.body);
+  g.addColorStop(0.66, f.colors.belly);
+  g.addColorStop(1, f.colors.belly);
+  return g;
 }
 
 function drawFishShape(c, f, t, opts = {}) {
   // draws centred at (0,0) facing +x — caller sets the transform on ctx `c`
-  const L = f.size, Hh = f.shape === 'puff' ? f.size * 0.86 : f.size * 0.5;
-  const wig = Math.sin(t * 9) * 0.12;
+  const L = f.size, Hh = f.size * (FISH_HH[f.shape] || 0.5);
+  const sil = !!opts.silhouette;
+  // tail whips harder at speed and lags a beat behind the body-mounted fins
+  const wigAmp = 0.1 + clamp((opts.speed || 0) / 2400, 0, 1) * 0.1;
+  const wig = Math.sin(t * 9) * wigAmp;
+  const wigTail = Math.sin(t * 9 - 0.7) * wigAmp * 1.5;
+  const seed = (f.id.charCodeAt(0) + f.id.length * 7) * 3.1;
+  const ink = sil ? SIL_INK : FISH_INK;
+  const finCol = sil ? SIL_FILL : f.colors.fin;
   c.lineWidth = 2.5;
-  c.strokeStyle = '#1e2a3a';
+  c.strokeStyle = ink;
 
-  // tail
-  c.fillStyle = f.colors.fin;
+  // ---- tail (behind the body) ----
+  c.fillStyle = finCol;
   c.beginPath();
-  c.moveTo(-L * 0.42, 0);
-  c.lineTo(-L * 0.72, Hh * (0.55 + wig));
-  c.lineTo(-L * 0.72, -Hh * (0.55 - wig));
-  c.closePath();
-  c.fill(); c.stroke();
+  if (f.shape === 'slim' || f.shape === 'wing') {          // forked two-lobe
+    c.moveTo(-L * 0.36, 0);
+    c.quadraticCurveTo(-L * 0.5, -Hh * 0.16, -L * 0.76, -Hh * (0.72 - wigTail));
+    c.quadraticCurveTo(-L * 0.6, -Hh * 0.12, -L * 0.54, 0);
+    c.quadraticCurveTo(-L * 0.6, Hh * 0.12, -L * 0.76, Hh * (0.72 + wigTail));
+    c.quadraticCurveTo(-L * 0.5, Hh * 0.16, -L * 0.36, 0);
+  } else if (f.shape === 'dart' || f.shape === 'tank') {   // stiff crescent
+    c.moveTo(-L * 0.38, 0);
+    c.lineTo(-L * 0.52, -Hh * 0.1);
+    c.quadraticCurveTo(-L * 0.56, -Hh * 0.34, -L * 0.78, -Hh * (0.7 - wigTail));
+    c.quadraticCurveTo(-L * 0.6, 0, -L * 0.78, Hh * (0.7 + wigTail));
+    c.quadraticCurveTo(-L * 0.56, Hh * 0.34, -L * 0.52, Hh * 0.1);
+  } else if (f.shape === 'sail') {                          // slender sickle
+    c.moveTo(-L * 0.38, 0);
+    c.lineTo(-L * 0.5, -Hh * 0.08);
+    c.quadraticCurveTo(-L * 0.52, -Hh * 0.4, -L * 0.82, -Hh * (0.85 - wigTail));
+    c.quadraticCurveTo(-L * 0.58, 0, -L * 0.82, Hh * (0.85 + wigTail));
+    c.quadraticCurveTo(-L * 0.52, Hh * 0.4, -L * 0.5, Hh * 0.08);
+  } else {                                                  // puff: little fan
+    c.moveTo(-L * 0.4, 0);
+    c.quadraticCurveTo(-L * 0.62, -Hh * (0.3 - wigTail * 0.6), -L * 0.66, -Hh * (0.18 - wigTail));
+    c.quadraticCurveTo(-L * 0.7, Hh * 0.02, -L * 0.66, Hh * (0.2 + wigTail));
+    c.quadraticCurveTo(-L * 0.62, Hh * 0.32, -L * 0.4, 0);
+  }
+  c.closePath(); c.fill(); c.stroke();
 
-  // body
-  const grad = c.createLinearGradient(0, -Hh, 0, Hh);
-  grad.addColorStop(0, f.colors.body);
-  grad.addColorStop(0.62, f.colors.body);
-  grad.addColorStop(0.66, f.colors.belly);
-  grad.addColorStop(1, f.colors.belly);
-  c.fillStyle = grad;
+  // sailfish bill, tucked under the head before the body goes down
+  if (f.shape === 'sail') {
+    c.fillStyle = sil ? SIL_FILL : mixHex(f.colors.body, FISH_INK, 0.2);
+    c.beginPath();
+    c.moveTo(L * 0.4, -Hh * 0.12);
+    c.quadraticCurveTo(L * 0.7, -Hh * 0.1, L * 0.88, -Hh * 0.02);
+    c.quadraticCurveTo(L * 0.7, Hh * 0.02, L * 0.4, Hh * 0.08);
+    c.closePath(); c.fill(); c.stroke();
+  }
+
+  // ---- body ----
+  c.fillStyle = sil ? SIL_FILL : fishBodyGrad(c, f, Hh);
   c.beginPath();
-  c.ellipse(0, 0, L * 0.5, Hh * 0.62, 0, 0, TAU);
-  c.fill(); c.stroke();
+  if (f.shape === 'puff') {                 // a ball with lips
+    c.ellipse(0, 0, L * 0.46, Hh * 0.72, 0, 0, TAU);
+  } else if (f.shape === 'dart') {          // torpedo with a pointed snout
+    c.moveTo(L * 0.58, 0);
+    c.quadraticCurveTo(L * 0.3, -Hh * 0.58, -L * 0.02, -Hh * 0.55);
+    c.quadraticCurveTo(-L * 0.3, -Hh * 0.48, -L * 0.42, -Hh * 0.14);
+    c.lineTo(-L * 0.42, Hh * 0.12);
+    c.quadraticCurveTo(-L * 0.3, Hh * 0.44, 0, Hh * 0.5);
+    c.quadraticCurveTo(L * 0.34, Hh * 0.52, L * 0.58, 0);
+  } else if (f.shape === 'tank') {          // deep heavy slab with a stout chin
+    c.moveTo(L * 0.48, -Hh * 0.08);
+    c.quadraticCurveTo(L * 0.3, -Hh * 0.66, -L * 0.02, -Hh * 0.62);
+    c.quadraticCurveTo(-L * 0.3, -Hh * 0.52, -L * 0.38, -Hh * 0.14);
+    c.lineTo(-L * 0.38, Hh * 0.12);
+    c.quadraticCurveTo(-L * 0.3, Hh * 0.5, 0, Hh * 0.6);
+    c.quadraticCurveTo(L * 0.3, Hh * 0.62, L * 0.46, Hh * 0.18);
+    c.quadraticCurveTo(L * 0.52, Hh * 0.04, L * 0.48, -Hh * 0.08);
+  } else if (f.shape === 'sail') {          // long and low-slung
+    c.moveTo(L * 0.5, -Hh * 0.04);
+    c.quadraticCurveTo(L * 0.26, -Hh * 0.56, -L * 0.04, -Hh * 0.54);
+    c.quadraticCurveTo(-L * 0.3, -Hh * 0.48, -L * 0.42, -Hh * 0.14);
+    c.lineTo(-L * 0.42, Hh * 0.12);
+    c.quadraticCurveTo(-L * 0.28, Hh * 0.44, 0, Hh * 0.48);
+    c.quadraticCurveTo(L * 0.3, Hh * 0.46, L * 0.5, Hh * 0.02);
+  } else {                                  // slim/wing: streamlined sardine
+    c.moveTo(L * 0.5, -Hh * 0.06);
+    c.quadraticCurveTo(L * 0.3, -Hh * 0.6, L * 0.02, -Hh * 0.58);
+    c.quadraticCurveTo(-L * 0.28, -Hh * 0.52, -L * 0.38, -Hh * 0.16);
+    c.lineTo(-L * 0.38, Hh * 0.14);
+    c.quadraticCurveTo(-L * 0.28, Hh * 0.46, 0, Hh * 0.52);
+    c.quadraticCurveTo(L * 0.32, Hh * 0.5, L * 0.5, Hh * 0.04);
+  }
+  c.closePath(); c.fill(); c.stroke();
 
-  if (f.shape === 'puff') { // spikes
+  // gill-cover arc + a few stable scale glints (skipped on silhouettes)
+  if (!sil && f.shape !== 'puff') {
+    c.globalAlpha = 0.45;
+    c.lineWidth = 2;
+    c.beginPath();
+    c.moveTo(L * 0.2, -Hh * 0.34);
+    c.quadraticCurveTo(L * 0.05, -Hh * 0.05, L * 0.18, Hh * 0.38);
+    c.stroke();
+    c.globalAlpha = 1;
+    c.lineWidth = 2.5;
+  }
+  if (!sil) {
+    c.fillStyle = 'rgba(255,255,255,0.3)';
+    for (let i = 0; i < 4; i++) {
+      const gx = lerp(-L * 0.24, L * 0.06, hash01(seed + i * 7.3));
+      const gy = lerp(-Hh * 0.3, Hh * 0.16, hash01(seed + i * 3.7));
+      c.beginPath(); c.ellipse(gx, gy, L * 0.045, L * 0.026, -0.4, 0, TAU); c.fill();
+    }
+  }
+
+  if (f.shape === 'puff') { // spikes, extending while puffed (boost/sink)
+    const ext = clamp(opts.spikeExt || 0, 0, 1);
     c.lineWidth = 2;
     for (let i = 0; i < 10; i++) {
       const a = (i / 10) * TAU + 0.3;
       c.beginPath();
-      c.moveTo(Math.cos(a) * L * 0.48, Math.sin(a) * Hh * 0.6);
-      c.lineTo(Math.cos(a) * L * 0.56, Math.sin(a) * Hh * 0.72);
+      c.moveTo(Math.cos(a) * L * 0.44, Math.sin(a) * Hh * 0.68);
+      c.lineTo(Math.cos(a) * L * (0.52 + 0.1 * ext), Math.sin(a) * Hh * (0.78 + 0.16 * ext));
       c.stroke();
     }
     c.lineWidth = 2.5;
   }
-  if (f.shape === 'dart') { // racing stripes
+  if (f.shape === 'dart' && !sil) { // racing stripes
     c.strokeStyle = '#1f7a5f'; c.lineWidth = 2;
     for (let i = -1; i <= 1; i++) {
       c.beginPath();
-      c.moveTo(-L * 0.1 + i * 8, -Hh * 0.5);
-      c.quadraticCurveTo(-L * 0.02 + i * 8, 0, -L * 0.1 + i * 8, Hh * 0.5);
+      c.moveTo(-L * 0.1 + i * 8, -Hh * 0.48);
+      c.quadraticCurveTo(-L * 0.02 + i * 8, 0, -L * 0.1 + i * 8, Hh * 0.46);
       c.stroke();
     }
-    c.strokeStyle = '#1e2a3a'; c.lineWidth = 2.5;
+    c.strokeStyle = ink; c.lineWidth = 2.5;
+  }
+  if (f.shape === 'tank') { // ridge of little tuna finlets along the back
+    c.fillStyle = sil ? SIL_FILL : '#ffd93b';
+    const spots = [[-0.06, -0.6], [-0.13, -0.53], [-0.2, -0.45], [-0.27, -0.36], [-0.33, -0.27]];
+    for (const [px, py] of spots) {
+      c.beginPath();
+      c.moveTo(L * px, Hh * py);
+      c.lineTo(L * (px - 0.045), Hh * (py - 0.14));
+      c.lineTo(L * (px - 0.06), Hh * (py + 0.02));
+      c.closePath(); c.fill(); c.stroke();
+    }
   }
 
-  // pectoral fin (big wing for the flying fish)
-  c.fillStyle = f.colors.fin;
+  // ---- pectoral fin (huge double-layer wing for the flying fish) ----
+  c.fillStyle = finCol;
   if (f.shape === 'wing') {
+    c.fillStyle = sil ? SIL_FILL : mixHex(f.colors.fin, FISH_INK, 0.3);
+    c.beginPath(); // under-wing, a darker layer peeking out behind
+    c.moveTo(-L * 0.02, -Hh * 0.15);
+    c.quadraticCurveTo(-L * 0.45, -Hh * (1.5 + wig * 2), -L * 0.78, -Hh * (0.9 + wig * 2));
+    c.quadraticCurveTo(-L * 0.36, -Hh * 0.35, -L * 0.02, -Hh * 0.15);
+    c.fill(); c.stroke();
+    c.fillStyle = finCol;
     c.beginPath();
     c.moveTo(-L * 0.05, -Hh * 0.2);
     c.quadraticCurveTo(-L * 0.5, -Hh * (1.7 + wig * 2), -L * 0.85, -Hh * (1.1 + wig * 2));
     c.quadraticCurveTo(-L * 0.4, -Hh * 0.45, -L * 0.05, -Hh * 0.2);
     c.fill(); c.stroke();
+    if (!sil) { // membrane ribs fanning through the wing
+      c.lineWidth = 1.5; c.globalAlpha = 0.45;
+      for (let i = 1; i <= 3; i++) {
+        const tt = i / 4;
+        c.beginPath();
+        c.moveTo(-L * 0.05, -Hh * 0.2);
+        c.quadraticCurveTo(
+          lerp(-L * 0.18, -L * 0.42, tt), -Hh * (0.4 + tt * (1.1 + wig * 2)),
+          lerp(-L * 0.3, -L * 0.8, tt), -Hh * (0.45 + tt * (0.62 + wig * 2)));
+        c.stroke();
+      }
+      c.globalAlpha = 1; c.lineWidth = 2.5;
+    }
   } else {
     c.beginPath();
     c.moveTo(L * 0.05, Hh * 0.15);
@@ -1632,47 +2454,234 @@ function drawFishShape(c, f, t, opts = {}) {
     c.fill(); c.stroke();
   }
 
-  // top fin — the sailfish gets a dramatic tall dorsal sail instead
-  c.beginPath();
-  if (f.shape === 'sail') {
-    c.moveTo(-L * 0.16, -Hh * 0.5);
-    c.quadraticCurveTo(-L * 0.02, -Hh * (2.5 + wig * 3), L * 0.14, -Hh * 0.56);
-    c.quadraticCurveTo(-L * 0.04, -Hh * 0.72, -L * 0.16, -Hh * 0.5);
-  } else {
-    c.moveTo(-L * 0.05, -Hh * 0.55);
-    c.quadraticCurveTo(-L * 0.22, -Hh * (0.95 + wig), -L * 0.3, -Hh * 0.5);
-  }
-  c.fill(); c.stroke();
-
-  // face
-  c.fillStyle = '#fff';
-  c.beginPath(); c.arc(L * 0.26, -Hh * 0.16, L * 0.1, 0, TAU); c.fill(); c.stroke();
-  c.fillStyle = '#1e2a3a';
-  c.beginPath(); c.arc(L * 0.29, -Hh * 0.16, L * 0.045, 0, TAU); c.fill();
-  c.beginPath(); c.arc(L * 0.3, Hh * 0.12, L * 0.12, 0.2, Math.PI * 0.7); c.stroke();
-  if (opts.worried) { // X eyes when sinking
-    c.fillStyle = '#fff';
-    c.fillRect(L * 0.16, -Hh * 0.3, L * 0.2, Hh * 0.28);
-    c.strokeStyle = '#1e2a3a'; c.lineWidth = 2;
-    const ex = L * 0.26, ey = -Hh * 0.16, r = L * 0.06;
+  // ---- dorsal fin ----
+  c.fillStyle = finCol;
+  if (f.shape === 'sail') { // the dramatic sail, with ribs and spots
     c.beginPath();
-    c.moveTo(ex - r, ey - r); c.lineTo(ex + r, ey + r);
-    c.moveTo(ex + r, ey - r); c.lineTo(ex - r, ey + r);
-    c.stroke();
+    c.moveTo(-L * 0.2, -Hh * 0.45);
+    c.quadraticCurveTo(-L * 0.04, -Hh * (2.2 + wig * 3), L * 0.16, -Hh * 0.5);
+    c.quadraticCurveTo(-L * 0.02, -Hh * 0.7, -L * 0.2, -Hh * 0.45);
+    c.fill(); c.stroke();
+    if (!sil) {
+      c.lineWidth = 1.5; c.globalAlpha = 0.4;
+      for (let i = 1; i <= 3; i++) {
+        const tt = i / 4;
+        c.beginPath();
+        c.moveTo(lerp(-L * 0.16, L * 0.12, tt), -Hh * 0.52);
+        c.lineTo(lerp(-L * 0.14, L * 0.08, tt), -Hh * (0.52 + (1.9 - Math.abs(tt - 0.5) * 1.6) * (1 + wig)));
+        c.stroke();
+      }
+      c.globalAlpha = 1; c.lineWidth = 2.5;
+      c.fillStyle = 'rgba(20,32,52,0.35)';
+      for (let i = 0; i < 5; i++) {
+        const sx2 = lerp(-L * 0.12, L * 0.08, hash01(seed + 40 + i * 5.1));
+        const sy2 = -Hh * lerp(0.7, 1.5, hash01(seed + 60 + i * 3.3));
+        c.beginPath(); c.arc(sx2, sy2, L * 0.022, 0, TAU); c.fill();
+      }
+    }
+  } else if (f.shape === 'tank') { // stiff pointed dorsal
+    c.beginPath();
+    c.moveTo(L * 0.02, -Hh * 0.62);
+    c.lineTo(-L * 0.05, -Hh * (0.98 + wig * 0.5));
+    c.lineTo(-L * 0.17, -Hh * 0.5);
+    c.closePath(); c.fill(); c.stroke();
+  } else if (f.shape !== 'puff') { // soft curved dorsal
+    c.beginPath();
+    c.moveTo(-L * 0.02, -Hh * 0.56);
+    c.quadraticCurveTo(-L * 0.2, -Hh * (0.95 + wig), -L * 0.28, -Hh * 0.48);
+    c.fill(); c.stroke();
   }
+
+  // ---- face ----
+  if (!sil) {
+    const eyeX = (f.shape === 'dart' || f.shape === 'sail') ? L * 0.3 : L * 0.26;
+    const eyeY = -Hh * (f.shape === 'tank' ? 0.22 : 0.16);
+    const eyeR = L * (opts.nervous ? 0.12 : 0.1);
+    if (opts.blink) { // mid-blink: a happy closed-eye arc
+      c.strokeStyle = FISH_INK; c.lineWidth = 2.5;
+      c.beginPath(); c.arc(eyeX, eyeY + eyeR * 0.2, eyeR * 0.7, Math.PI * 0.15, Math.PI * 0.85); c.stroke();
+    } else {
+      c.fillStyle = '#fff';
+      c.beginPath(); c.arc(eyeX, eyeY, eyeR, 0, TAU); c.fill(); c.stroke();
+      const pa = opts.pupilA ?? 0; // pupil looks along this angle (default: ahead)
+      const pr = L * (opts.nervous ? 0.05 : 0.035);
+      c.fillStyle = FISH_INK;
+      c.beginPath();
+      c.arc(eyeX + Math.cos(pa) * pr, eyeY - Math.sin(pa) * pr, L * (opts.nervous ? 0.035 : 0.045), 0, TAU);
+      c.fill();
+    }
+    const mouthX = (f.shape === 'dart' || f.shape === 'sail') ? L * 0.36 : L * 0.3;
+    if (opts.mouthOpen) { // open wide — boosting or about to chomp a snack
+      c.fillStyle = '#7c1f3d';
+      c.beginPath(); c.ellipse(mouthX, Hh * 0.16, L * 0.06, L * 0.08, 0.25, 0, TAU); c.fill(); c.stroke();
+    } else {
+      c.strokeStyle = FISH_INK;
+      c.beginPath(); c.arc(mouthX, Hh * 0.12, L * 0.12, 0.2, Math.PI * 0.7); c.stroke();
+    }
+    if (opts.worried) { // X eyes when sinking
+      c.fillStyle = '#fff';
+      c.fillRect(L * 0.16, -Hh * 0.3, L * 0.2, Hh * 0.28);
+      c.strokeStyle = FISH_INK; c.lineWidth = 2;
+      const ex = L * 0.26, ey = -Hh * 0.16, r = L * 0.06;
+      c.beginPath();
+      c.moveTo(ex - r, ey - r); c.lineTo(ex + r, ey + r);
+      c.moveTo(ex + r, ey - r); c.lineTo(ex - r, ey + r);
+      c.stroke();
+    }
+  }
+}
+
+// motion-trail ribbon: drawn in plain screen space (not the fish's rotated
+// local frame) since it's a history of past world positions, not part of
+// the fish's own silhouette
+function drawFishTrail() {
+  if (REDUCED_MOTION || run.trail.length < 2) return;
+  ctx.save();
+  ctx.lineCap = 'round';
+  const n = run.trail.length;
+  for (let i = 1; i < n; i++) {
+    const a = run.trail[i - 1], b = run.trail[i];
+    const age = i / n; // 0 = oldest, 1 = newest
+    const width = fishDef.size * 0.42 * age;
+    if (width < 0.6) continue;
+    ctx.lineWidth = width;
+    ctx.strokeStyle = fishDef.colors.body;
+    ctx.globalAlpha = 0.2 * age;
+    ctx.beginPath();
+    ctx.moveTo(w2sx(a.x), w2sy(a.y));
+    ctx.lineTo(w2sx(b.x), w2sy(b.y));
+    ctx.stroke();
+    if (b.sp > 1400) { // additive white core at high speed
+      ctx.strokeStyle = '#ffffff';
+      ctx.globalAlpha = 0.3 * age * clamp((b.sp - 1400) / 700, 0, 1);
+      ctx.lineWidth = width * 0.35;
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+// nearest uneaten food ahead of/beside the fish — used only to give the
+// pupils something to glance toward; returns the food's world-y offset
+// from the fish (positive = above) or null if nothing qualifies
+function nearestFoodDy() {
+  let bestD = Infinity, bestDy = null;
+  for (const f of foods) {
+    if (f.taken) continue;
+    const dx = f.x - run.x;
+    if (dx < -20 || dx > 260) continue;
+    const s0 = surfaceAt(f.x, time);
+    const fy = s0.y + f.baseY + Math.sin(time * 2 + f.phase) * 6;
+    const dy = fy - run.y;
+    const d = Math.hypot(dx, dy);
+    if (d < bestD) { bestD = d; bestDy = dy; }
+  }
+  return bestD < 260 ? bestDy : null;
+}
+
+// per-fish blink cadence: one ~0.12s blink every ~2.6-3.6s, timed
+// differently per fish (hash01 offset) so a school wouldn't blink in sync
+function isBlinking(fishSeed) {
+  const period = 2.6 + hash01(fishSeed + 11.1) * 1.0;
+  const cycle = Math.floor(time / period);
+  const phase = time - cycle * period;
+  const blinkAt = 0.3 + hash01(cycle * 17.3 + fishSeed) * (period - 0.6);
+  return Math.abs(phase - blinkAt) < 0.06;
+}
+
+// two-layer chili-flame cone, drawn in the fish's rotated local frame
+// (local -x = behind the tail), with a hash01-driven flicker so it doesn't
+// look like a static decal
+function drawBoostFlame(size) {
+  const flick = 0.85 + 0.3 * hash01(Math.floor(time * 30));
+  const len = size * (0.9 + 0.3 * hash01(Math.floor(time * 22) + 5.5)) * flick;
+  const baseX = -size * 0.62, w = size * 0.22;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = '#ff7a1a';
+  ctx.globalAlpha = 0.75;
+  ctx.beginPath();
+  ctx.moveTo(baseX, -w); ctx.quadraticCurveTo(baseX - len, 0, baseX, w);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#ffe066';
+  ctx.globalAlpha = 0.85;
+  ctx.beginPath();
+  ctx.moveTo(baseX, -w * 0.5); ctx.quadraticCurveTo(baseX - len * 0.6, 0, baseX, w * 0.5);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+// short streaks trailing behind the fish (local -x, post-rotation) when
+// airspeed clears SPEED_LINES_MIN — hash01-seeded on a coarse time bucket so
+// they hold still for a few frames rather than jittering every draw
+function drawSpeedLines(speed, size) {
+  const bucket = Math.floor(time * 16);
+  const strength = clamp((speed - SPEED_LINES_MIN) / 900, 0, 1);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 1.6;
+  for (let i = 0; i < 4; i++) {
+    const s1 = hash01(bucket * 3.1 + i * 7.7), s2 = hash01(bucket * 3.1 + i * 7.7 + 1.3);
+    const yOff = (s1 - 0.5) * size * 1.5;
+    const startX = -size * (0.55 + s2 * 0.35);
+    const len = size * (0.35 + strength * 0.4);
+    ctx.globalAlpha = 0.35 + strength * 0.35;
+    ctx.beginPath();
+    ctx.moveTo(startX, yOff);
+    ctx.lineTo(startX - len, yOff);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 function drawFish() {
   if (state === 'menu' || state === 'shop' || state === 'done') return;
+  drawFishTrail();
+  const speed = state === 'fly' ? Math.hypot(run.vx, run.vy) : 0;
   ctx.save();
   ctx.translate(w2sx(run.x), w2sy(run.y));
   let ang = 0;
   if (state === 'toss') ang = time * 6;                     // tumbling in the toss
   else if (state === 'sink') ang = Math.sin(run.spinning) * 0.6 + 0.5;
-  else if (state === 'fly') ang = -Math.atan2(run.vy, Math.max(80, run.vx));
+  else if (state === 'fly') {
+    ang = -Math.atan2(run.vy, Math.max(80, run.vx));
+    // a full rotation added on top of the velocity-aligned angle — lands
+    // back on the same visual angle exactly when the flip completes
+    if (run.flip) ang -= TAU * easeInOutCubic(clamp(run.flip.t / run.flip.dur, 0, 1));
+  }
   ctx.rotate(ang);
+
+  // boost flame, drawn behind the tail (local -x) before the body
+  const isBoosting = state === 'fly' && (run.freeBoostT > 0 || (held && run.energy > 0));
+  if (isBoosting) drawBoostFlame(fishDef.size);
+
+  // squash & stretch: modest stretch at speed, a sharp squash pulse right
+  // after an impact (swing contact or a bounce) that eases out over ~0.12s
+  const stretch = clamp(speed / 2600, 0, 0.2);
+  const squashPulse = run.squashT >= 0 ? 0.5 * Math.exp(-(time - run.squashT) / 0.12) : 0;
+  const sq = clamp(stretch - squashPulse, -0.4, 0.22);
+  ctx.scale(1 + sq, 1 - sq * 0.8);
+
+  if (!REDUCED_MOTION && speed > SPEED_LINES_MIN) drawSpeedLines(speed, fishDef.size);
+
   if (state === 'sink') ctx.globalAlpha = clamp(1.2 - run.sinkT * 0.55, 0.25, 1);
-  drawFishShape(ctx, fishDef, run.wiggle, { worried: state === 'sink' });
+
+  const st2 = state === 'fly' ? stats() : null;
+  const surf2 = state === 'fly' ? surfaceAt(run.x, time) : null;
+  const nervous = state === 'fly' && st2 && speed < st2.minSkim * 1.15 && (run.y - surf2.y) < 90;
+  const foodDy = state === 'fly' ? nearestFoodDy() : null;
+  const opts = {
+    worried: state === 'sink',
+    nervous,
+    blink: state === 'fly' && !nervous && isBlinking(fishDef.id.charCodeAt(0)),
+    pupilA: foodDy != null ? clamp(foodDy / 140, -1, 1) * 0.5 : 0,
+    mouthOpen: isBoosting || (state === 'fly' && foodDy != null && Math.abs(foodDy) < 60),
+    speed,
+    spikeExt: state === 'sink' ? 1 : clamp((speed - 900) / 1400, 0, 1),
+  };
+  drawFishShape(ctx, fishDef, run.wiggle, opts);
   if (state === 'sink' && assets.caustics.loaded) {
     // caustic dapples projected onto the sinking fish — same scrolling
     // pattern as drawSea's water layer, 'multiply'-blended so it reads as
@@ -1708,6 +2717,20 @@ function drawSinkOverlay() {
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
 }
+function drawPauseOverlay() {
+  ctx.fillStyle = 'rgba(4,20,35,0.55)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `bold ${Math.round(clamp(W * 0.07, 30, 56))}px 'Comic Sans MS', sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.lineWidth = 4; ctx.strokeStyle = '#04293a';
+  ctx.strokeText('PAUSA ⏸', W / 2, H / 2);
+  ctx.fillText('PAUSA ⏸', W / 2, H / 2);
+  ctx.font = '15px sans-serif';
+  ctx.fillStyle = '#fff3d6';
+  ctx.fillText('Tap to resume', W / 2, H / 2 + 34);
+  ctx.textAlign = 'left';
+}
 
 function drawSweetRing() {
   if (state !== 'toss' && state !== 'ready') return;
@@ -1724,6 +2747,31 @@ function drawSweetRing() {
     ctx.fillText('🎯', sx, sy + 5);
     ctx.textAlign = 'left';
   }
+}
+
+// faint shimmer over upcoming wave faces that would land a sweet skip,
+// so aiming the boost-dive at one is a readable choice rather than a
+// blind gamble — only shown while actually descending
+function drawSweetFaceTelegraph() {
+  if (REDUCED_MOTION || state !== 'fly' || run.vy >= 0) return;
+  const step = 20, endX = run.x + 600;
+  ctx.save();
+  ctx.lineWidth = 5;
+  ctx.lineCap = 'round';
+  for (let wx = run.x; wx < endX; wx += step) {
+    const mid = surfaceAt(wx, time);
+    if (mid.slope >= -SWEET_SKIP_SLOPE) continue;
+    const sx = w2sx(wx);
+    if (sx < -30 || sx > W + 30) continue;
+    const a = surfaceAt(wx - step * 0.5, time), b = surfaceAt(wx + step * 0.5, time);
+    const shimmer = 0.14 + 0.1 * Math.sin(time * 5 + wx * 0.02);
+    ctx.strokeStyle = `rgba(142,240,255,${shimmer.toFixed(3)})`;
+    ctx.beginPath();
+    ctx.moveTo(w2sx(wx - step * 0.5), w2sy(a.y));
+    ctx.lineTo(w2sx(wx + step * 0.5), w2sy(b.y));
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 // deterministic pseudo-random in [0,1) for a given number — used so kelp
@@ -1966,6 +3014,90 @@ function drawFoods() {
   }
 }
 
+function drawHazards() {
+  for (const hz of hazards) {
+    if (hz.hit) continue; // hit ones vanish — the debris puff already sold the impact
+    const p = hazardPos(hz, time);
+    const sx = w2sx(p.x), sy = w2sy(p.y);
+    if (sx < -60 || sx > W + 60) continue;
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.lineWidth = 2.5; ctx.strokeStyle = FISH_INK;
+    if (hz.type === 'buoy') {
+      ctx.fillStyle = '#e6473a';
+      ctx.beginPath();
+      ctx.moveTo(-13, 11); ctx.lineTo(-9, -14); ctx.lineTo(9, -14); ctx.lineTo(13, 11);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath(); ctx.rect(-11, -5, 22, 7); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#ffd93b';
+      ctx.beginPath(); ctx.arc(0, -18, 4, 0, TAU); ctx.fill(); ctx.stroke();
+    } else {
+      const flap = Math.sin(time * 10 + hz.phase) * 0.6;
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.moveTo(-1, 0); ctx.quadraticCurveTo(-20, -8 - flap * 14, -30, 3 - flap * 10);
+      ctx.quadraticCurveTo(-13, 5, -1, 2);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(1, 0); ctx.quadraticCurveTo(20, -8 - flap * 14, 30, 3 - flap * 10);
+      ctx.quadraticCurveTo(13, 5, 1, 2);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(0, 0, 10, 6, 0, 0, TAU); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#ffb347';
+      ctx.beginPath(); ctx.moveTo(9, -2); ctx.lineTo(16, 0); ctx.lineTo(9, 2); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = FISH_INK;
+      ctx.beginPath(); ctx.arc(5, -2, 1.4, 0, TAU); ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+function drawPearls() {
+  for (const p of pearls) {
+    if (p.taken) continue;
+    const sx = w2sx(p.x);
+    if (sx < -30 || sx > W + 30) continue;
+    const sy = w2sy(p.y + Math.sin(time * 2.2 + p.phase) * 5);
+    const r = 9;
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(sx, sy, r + 8 + Math.sin(time * 3 + p.phase) * 2, 0, TAU); ctx.fill();
+    ctx.globalAlpha = 1;
+    const g = ctx.createRadialGradient(sx - 3, sy - 3, 1, sx, sy, r);
+    g.addColorStop(0, '#ffffff'); g.addColorStop(0.4, '#dff0ff');
+    g.addColorStop(0.72, '#c9a8ff'); g.addColorStop(1, '#8ec9ff');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(sx, sy, r, 0, TAU); ctx.fill();
+    ctx.strokeStyle = '#6a5acd'; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+}
+
+function drawChilis() {
+  for (const c of chilis) {
+    if (c.taken) continue;
+    const sx = w2sx(c.x);
+    if (sx < -30 || sx > W + 30) continue;
+    const sy = w2sy(c.y + Math.sin(time * 2 + c.phase) * 6);
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(Math.sin(time * 1.4 + c.phase) * 0.2);
+    ctx.fillStyle = 'rgba(255,90,40,0.25)';
+    ctx.beginPath(); ctx.arc(0, 0, 16 + Math.sin(time * 4 + c.phase) * 2, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#e63b1f'; ctx.strokeStyle = '#7a1f0d'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-2, -8);
+    ctx.quadraticCurveTo(10, -6, 9, 4);
+    ctx.quadraticCurveTo(6, 11, -3, 9);
+    ctx.quadraticCurveTo(-9, 4, -2, -8);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = '#2e8c4f'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-2, -8); ctx.lineTo(-5, -14); ctx.stroke();
+    ctx.lineCap = 'butt';
+    ctx.restore();
+  }
+}
+
 function drawParticles() {
   for (const p of particles) {
     const sx = w2sx(p.x), sy = w2sy(p.y);
@@ -1979,6 +3111,11 @@ function drawParticles() {
       ctx.fill();
       ctx.fillStyle = 'rgba(255,255,255,0.9)';
       ctx.beginPath(); ctx.arc(sx - p.size * 0.3, sy + p.size * 0.3, p.size * 0.28, 0, TAU); ctx.fill();
+    } else if (p.kind === 'ring') {
+      const t = 1 - p.life / p.maxLife;
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = 3 * (1 - t) + 1;
+      ctx.beginPath(); ctx.arc(sx, sy, p.size * (0.3 + t * 0.9), 0, TAU); ctx.stroke();
     } else {
       ctx.fillStyle = p.color;
       ctx.beginPath(); ctx.arc(sx, sy, p.size, 0, TAU); ctx.fill();
@@ -2033,7 +3170,11 @@ function render() {
   drawLuchador();
   drawPicado();      // behind the action so the ring and fish stay readable
   drawSweetRing();
+  drawSweetFaceTelegraph();
   drawFoods();
+  drawPearls();
+  drawChilis();
+  drawHazards();
   drawFish();
   if (state === 'sink') drawSinkOverlay();
   drawParticles();
@@ -2064,38 +3205,91 @@ function updateHud() {
   const showWind = Math.abs(wind.base) >= 25;
   $('hudWind').classList.toggle('hidden', !showWind);
   if (showWind) $('hudWind').textContent = (wind.dir > 0 ? '💨→ ' : '💨← ') + windKmh;
+  const m = mult();
+  const showCombo = state === 'fly' && m > 1;
+  $('hudCombo').classList.toggle('hidden', !showCombo);
+  if (showCombo) $('hudCombo').textContent = `🔥 ×${m}`;
+  const showPearls = run.pearls > 0;
+  $('hudPearls').classList.toggle('hidden', !showPearls);
+  if (showPearls) $('hudPearls').textContent = '🦪 ' + run.pearls;
 }
 
 /* ---------- menu / shop ---------- */
+function unlockReqText(f) {
+  const u = f.unlock;
+  if (u.type === 'best') return `Reach ${u.m}m best distance to unlock`;
+  if (u.type === 'skips') return `Get ${u.n} skips in one run to unlock`;
+  if (u.type === 'pearls') return '';
+  return '';
+}
+function renderMissionsPanel() {
+  ensureMissions();
+  $('missionsPanel').innerHTML = save.missions
+    .map((slot) => MISSIONS.find((m) => m.id === slot.id))
+    .filter(Boolean)
+    .map((def) => `<div>🎯 ${def.text}</div>`)
+    .join('');
+}
 function buildMenu() {
+  renderMissionsPanel();
   const wrap = $('fishCards');
   wrap.innerHTML = '';
   for (const f of FISH) {
+    const unlocked = !!save.unlocked[f.id];
     const card = document.createElement('div');
-    card.className = 'card' + (f.id === fishDef.id ? ' sel' : '');
-    card.innerHTML = `
-      <h3>${f.name}</h3><div class="species">${f.species}</div>
-      <canvas width="104" height="58"></canvas>
-      <div class="stat"><b>power</b><div class="bar"><i style="width:${Math.round(f.power / 1.3 * 100)}%"></i></div></div>
-      <div class="stat"><b>bounce</b><div class="bar"><i style="width:${Math.round(f.bounce / 0.85 * 100)}%"></i></div></div>
-      <div class="stat"><b>aero</b><div class="bar"><i style="width:${Math.round((1 - f.drag / 0.18) * 100)}%"></i></div></div>
-      <div class="stat"><b>sea legs</b><div class="bar"><i style="width:${Math.round(f.seaLegs * 100)}%"></i></div></div>
-      <div class="blurb">${f.blurb}</div>`;
-    card.addEventListener('click', () => {
-      fishDef = f; save.fish = f.id; persist(); sfx.click();
-      for (const c of wrap.children) c.classList.remove('sel');
-      card.classList.add('sel');
-    });
+    card.className = 'card' + (unlocked && f.id === fishDef.id ? ' sel' : '') + (unlocked ? '' : ' locked');
+    if (unlocked) {
+      card.innerHTML = `
+        <h3>${f.name}</h3><div class="species">${f.species}</div>
+        <canvas width="104" height="58"></canvas>
+        <div class="stat"><b>power</b><div class="bar"><i style="width:${Math.round(f.power / 1.3 * 100)}%"></i></div></div>
+        <div class="stat"><b>bounce</b><div class="bar"><i style="width:${Math.round(f.bounce / 0.85 * 100)}%"></i></div></div>
+        <div class="stat"><b>aero</b><div class="bar"><i style="width:${Math.round((1 - f.drag / 0.18) * 100)}%"></i></div></div>
+        <div class="stat"><b>sea legs</b><div class="bar"><i style="width:${Math.round(f.seaLegs * 100)}%"></i></div></div>
+        <div class="blurb">${f.blurb}</div>`;
+      card.addEventListener('click', () => {
+        fishDef = f; save.fish = f.id; persist(); sfx.click();
+        for (const c of wrap.children) c.classList.remove('sel');
+        card.classList.add('sel');
+      });
+    } else if (f.unlock.type === 'pearls') {
+      const affordable = save.pearls >= f.unlock.n;
+      card.innerHTML = `
+        <h3>🔒 ${f.name}</h3><div class="species">${f.species}</div>
+        <canvas width="104" height="58"></canvas>
+        <div class="blurb">${f.blurb}</div>
+        <button class="buy lockbuy" ${affordable ? '' : 'disabled'}>🦪 ${f.unlock.n}</button>`;
+      card.querySelector('.lockbuy').addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (save.pearls < f.unlock.n) { sfx.nope(); return; }
+        save.pearls -= f.unlock.n;
+        save.unlocked[f.id] = true;
+        persist(); sfx.buy();
+        buildMenu();
+      });
+    } else {
+      card.innerHTML = `
+        <h3>🔒 ${f.name}</h3><div class="species">${f.species}</div>
+        <canvas width="104" height="58"></canvas>
+        <div class="blurb">${unlockReqText(f)}</div>`;
+      card.addEventListener('click', () => sfx.nope());
+    }
     wrap.appendChild(card);
     const cv = card.querySelector('canvas');
     const mc = cv.getContext('2d');
-    const portrait = assets['portrait' + f.id[0].toUpperCase() + f.id.slice(1)];
-    if (portrait?.loaded) {
-      mc.drawImage(portrait.el, 0, 0, cv.width, cv.height);
+    if (unlocked) {
+      const portrait = assets['portrait' + f.id[0].toUpperCase() + f.id.slice(1)];
+      if (portrait?.loaded) {
+        mc.drawImage(portrait.el, 0, 0, cv.width, cv.height);
+      } else {
+        mc.translate(52, 30);
+        mc.scale(0.9, 0.9);
+        drawFishShape(mc, f, 0.4, {});
+      }
     } else {
       mc.translate(52, 30);
       mc.scale(0.9, 0.9);
-      drawFishShape(mc, f, 0.4, {});
+      drawFishShape(mc, f, 0.4, { silhouette: true });
     }
   }
   refreshMenuStats();
@@ -2109,7 +3303,7 @@ function windLabel() {
   return `STRONG ${dirWord} today 💨💨💨`;
 }
 function refreshMenuStats() {
-  $('menuStats').textContent = `🏆 best: ${save.best} m · 🟡 ${save.food} · runs: ${save.runs} · ${windLabel()}`;
+  $('menuStats').textContent = `🏆 best: ${save.best} m · 🟡 ${save.food} · 🦪 ${save.pearls} · runs: ${save.runs} · ${windLabel()}`;
 }
 function buildShop() {
   $('shopFood').textContent = `🟡 ${save.food} fish food`;
@@ -2138,14 +3332,33 @@ function buildShop() {
   }
 }
 
-/* ---------- input: one finger does everything ---------- */
+/* ---------- input: one finger does everything — hold = boost, a quick
+   tap (< TAP_MS) while airborne = a backflip trick instead ---------- */
+function tryStartFlip() {
+  const surf = surfaceAt(run.x, time);
+  if (run.y - surf.y <= 60) return; // not enough clearance to safely flip
+  if (!run.flip) run.flip = { t: 0, dur: FLIP_DUR };
+  else if (run.flipQueue < FLIP_QUEUE_MAX) run.flipQueue++;
+}
+function togglePause() {
+  if (state !== 'fly' && !paused) return; // can only pause mid-flight, but can always resume
+  paused = !paused;
+  $('pauseBtn').textContent = paused ? '▶' : '⏸';
+  if (paused) silenceWindAudio();
+  else last = performance.now(); // avoid a huge dt jump from the paused wall-clock gap
+}
 function press() {
   audio();
+  if (paused) { togglePause(); return; }
   if (state === 'ready') toss();
   else if (state === 'toss') swing();
-  else if (state === 'fly') held = true;
+  else if (state === 'fly') { held = true; flyPressT = time; }
 }
-function release() { held = false; }
+function release() {
+  if (held && state === 'fly' && flyPressT >= 0 && time - flyPressT < TAP_MS) tryStartFlip();
+  held = false;
+  flyPressT = -1;
+}
 cvs.addEventListener('pointerdown', (e) => { e.preventDefault(); press(); });
 window.addEventListener('pointerup', release);
 window.addEventListener('pointercancel', release);
@@ -2176,8 +3389,11 @@ window.addEventListener('keydown', (e) => {
     if (state === 'menu' && !$('menu').classList.contains('hidden')) { startRun(); sfx.click(); return; }
     press();
   }
-  if (e.code === 'Escape' && (state === 'ready' || state === 'toss' || state === 'done')) {
-    state = 'menu'; hud(false); buildMenu(); showScreen('menu');
+  if (e.code === 'Escape') {
+    if (state === 'fly' || paused) { togglePause(); return; }
+    if (state === 'ready' || state === 'toss' || state === 'done') {
+      state = 'menu'; hud(false); buildMenu(); showScreen('menu');
+    }
   }
 });
 window.addEventListener('keyup', (e) => { if (e.code === 'Space' || e.code === 'Enter') release(); });
@@ -2192,6 +3408,12 @@ $('muteBtn').addEventListener('click', () => {
   $('muteBtn').textContent = save.muted ? '🔇' : '🔊';
 });
 $('muteBtn').textContent = save.muted ? '🔇' : '🔊';
+$('musicBtn').addEventListener('click', () => {
+  save.music = !save.music; persist();
+  $('musicBtn').style.opacity = save.music ? 1 : 0.45;
+});
+$('musicBtn').style.opacity = save.music ? 1 : 0.45;
+$('pauseBtn').addEventListener('click', () => { audio(); togglePause(); });
 $('fsBtn').addEventListener('click', () => {
   const el = document.documentElement;
   if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); }
@@ -2204,23 +3426,39 @@ let last = performance.now();
 function frame(now) {
   const dt = Math.min((now - last) / 1000, 0.1);
   last = now;
-  time += dt;
-  updateQualityScaler(dt * 1000);
 
-  acc += dt;
-  let guard = 0;
-  while (acc >= FIXED && guard++ < FIXED_STEPS_MAX) {
-    stepPhysics(FIXED);
-    acc -= FIXED;
+  if (!paused) {
+    time += dt;
+    updateQualityScaler(dt * 1000);
+
+    // hitstop: a brief freeze-frame on solid bat contact — physics (and
+    // anything driven by it, like the swing clock and the fish's wiggle)
+    // pauses for a beat while camera shake/dust keep animating, so the hit
+    // reads as a real impact rather than a continuous blur through it
+    if (hitstopT > 0) {
+      hitstopT = Math.max(0, hitstopT - dt);
+    } else {
+      acc += dt;
+      let guard = 0;
+      while (acc >= FIXED && guard++ < FIXED_STEPS_MAX) {
+        stepPhysics(FIXED);
+        acc -= FIXED;
+      }
+    }
+    stepCamera(dt);
+    spawnFoodAhead();
+    spawnGustsAhead();
+    spawnThermalsAhead();
+    spawnHazardsAhead();
+    stepHazards(dt);
+    spawnPearlsAhead();
+    spawnChilisAhead();
+    stepBubbleColumns(dt);
+    stepWindStreaks(dt);
+    stepParticles(dt);
   }
-  stepCamera(dt);
-  spawnFoodAhead();
-  spawnGustsAhead();
-  spawnThermalsAhead();
-  stepBubbleColumns(dt);
-  stepWindStreaks(dt);
-  stepParticles(dt);
   render();
+  if (paused) drawPauseOverlay();
   updateHud();
   requestAnimationFrame(frame);
 }
@@ -2234,8 +3472,24 @@ window.OceanSkips = {
   get state() { return state; },
   get snapshot() {
     return { state, x: run.x, y: run.y, vx: run.vx, vy: run.vy,
-             dist: run.dist, skips: run.skips, energy: run.energy };
+             dist: run.dist, skips: run.skips, energy: run.energy,
+             combo: run.combo, comboBest: run.comboBest, mult: mult(), sweetSkips: run.sweetSkips,
+             tricks: run.tricks, flip: run.flip ? { ...run.flip } : null, flipQueue: run.flipQueue,
+             nearMisses: run.nearMisses, pearls: run.pearls, freeBoostT: run.freeBoostT,
+             bigAir: run.bigAir, missionsCompleted: run.missionsCompleted.map((m) => m.id) };
   },
+  startFlip: tryStartFlip,   // test-only: force a flip attempt regardless of tap timing
+  get hazards() { return hazards.map(h => ({ ...h })); },
+  spawnHazard(x, type) {   // test-only: place a hazard directly, bypassing the distance spawner
+    hazards.push(type === 'gull'
+      ? { type: 'gull', x, y: 300, vx: -40, hit: false, missCredited: false, phase: 0 }
+      : { type: 'buoy', x, hit: false, missCredited: false, phase: 0 });
+  },
+  get pearls() { return pearls.map(p => ({ ...p })); },
+  get chilis() { return chilis.map(c => ({ ...c })); },
+  get savePearls() { return save.pearls; },
+  spawnPearl(x, y) { pearls.push({ x, y, taken: false, phase: 0 }); },   // test-only
+  spawnChili(x, y) { chilis.push({ x, y, taken: false, phase: 0 }); },   // test-only
   get view() {
     return { W, H, VS, DPR, seaLine: seaLine(), camX: cam.x, camY: cam.y,
              tossApex: TOSS_Y + 83 };
@@ -2251,7 +3505,7 @@ window.OceanSkips = {
   get flightEvents() {
     return { gustEvents: gustEvents.map(g => ({ ...g })), thermals: thermals.map(t => ({ ...t })), gustBoostT };
   },
-  get bigAirCount() { return bigAirCount; },
+  get bigAirCount() { return run.bigAir; },   // session-scoped since points-11/12 moved it onto run
   get particleCount() { return particles.length; },
   quality, updateQualityScaler, PARTICLE_CAP, REDUCED_MOTION, windLabel,   // exposed for perf/meta tests
   get audioLog() { return audioLog.slice(); },
@@ -2259,6 +3513,18 @@ window.OceanSkips = {
   sfx, updateWindAudio,   // exposed for audio-tuning tests
   selectFish(id) { const f = FISH.find(x => x.id === id); if (f) { fishDef = f; save.fish = f.id; } },
   warp(x) { cam.x = x; menuWrapLimit = Math.max(4200, x + 8000); },
+  get save() { return JSON.parse(JSON.stringify(save)); },   // exposed for save-migration tests
+  get fishList() { return FISH.map((f) => ({ id: f.id, unlock: { ...f.unlock } })); },
+  grantPearls(n) { save.pearls += n; persist(); },   // test/debug helper
+  MISSIONS, checkMissions,   // exposed for mission tests
+  get missions() { return save.missions.map((s) => ({ ...s, ...MISSIONS.find((m) => m.id === s.id) })); },
+  setActiveMissions(ids) { save.missions = ids.map((id) => ({ id })); },   // test-only
+  runScore, medalFor, MEDALS,   // exposed for results/medal tests
+  get records() { return { ...save.records }; },
+  get paused() { return paused; },
+  togglePause,
+  get musicNextBeatTime() { return musicNextBeatTime; },
+  setCombo(n) { run.combo = n; },   // test-only: drive the music scheduler's tier without playing
 };
 
 /* ---------- cache-busting service worker ---------- */

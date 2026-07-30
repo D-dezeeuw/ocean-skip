@@ -90,6 +90,37 @@ await page.evaluate(() => window.OceanSkips.updateWindAudio(900, 400));  // high
 const windAltLog = await page.evaluate(() => window.OceanSkips.audioLog.filter((e) => e.fn === 'wind'));
 check('higher altitude is louder wind at the same speed', windAltLog[1].gain > windAltLog[0].gain, JSON.stringify(windAltLog));
 
+// --- dynamic mariachi loop: a higher skip-combo tier schedules more music
+// events (melody joins at x3, lead at x5) — the music itself should read
+// as "getting busier" as the combo builds. Get into flight (the scheduler
+// only arms the melody/lead layers while state === 'fly') then pause so
+// no gameplay-triggered sfx (skips, wind, etc) pollute the sample —
+// scheduleMusic runs on its own setInterval, independent of the paused
+// render loop, so it keeps producing notes while paused.
+// #playBtn only exists on the menu screen — reload fresh since the run
+// started at the top of this file already left it behind.
+await page.goto(GAME);
+await page.waitForTimeout(300);
+await page.click('#playBtn');
+await page.waitForTimeout(150);
+await page.mouse.down(); await page.mouse.up(); // toss
+await page.waitForTimeout(230);
+await page.mouse.down(); await page.mouse.up(); // swing -> fly
+await page.waitForTimeout(60);
+await page.evaluate(() => window.OceanSkips.togglePause());
+await page.waitForTimeout(50);
+
+await page.evaluate(() => { window.OceanSkips.clearAudioLog(); window.OceanSkips.setCombo(0); });
+await page.waitForTimeout(3000);
+const lowTierCount = (await page.evaluate(() => window.OceanSkips.audioLog)).length;
+
+await page.evaluate(() => { window.OceanSkips.clearAudioLog(); window.OceanSkips.setCombo(16); }); // tier 4, x5
+await page.waitForTimeout(3000);
+const highTierCount = (await page.evaluate(() => window.OceanSkips.audioLog)).length;
+
+check('a higher combo tier schedules more music events than an empty combo',
+  highTierCount > lowTierCount, `tier0=${lowTierCount} tier4=${highTierCount}`);
+
 check('no console/page errors', errors.length === 0, errors.join(' | '));
 
 await browser.close();
