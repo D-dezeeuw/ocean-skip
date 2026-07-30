@@ -148,6 +148,17 @@
   #results .big { font-size: clamp(28px, 6vw, 48px); color: #b3125c; }
   #results .newbest { color: #d9820b; font-weight: bold; animation: pulse 1s infinite alternate; }
   @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.08); } }
+  .medalWrap { display: flex; justify-content: center; }
+  #medalCanvas { width: 60px; height: 75px; }
+  .breakdown { text-align: left; font-size: 12.5px; color: #245; margin: 4px 0; max-height: 34vh; overflow-y: auto; }
+  .breakdown .row {
+    display: flex; justify-content: space-between; gap: 8px; padding: 2px 4px;
+    border-bottom: 1px dashed #f3b8d1; animation: rowIn .32s ease both;
+  }
+  .breakdown .row:last-child { border-bottom: 0; }
+  .breakdown .row b { color: #b3125c; white-space: nowrap; }
+  .breakdown .newrecord { color: #d9820b; font-weight: bold; font-size: 10px; margin-left: 5px; }
+  @keyframes rowIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
   .rowbtns { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
 
   /* ---------- rotate-your-phone overlay ---------- */
@@ -221,9 +232,11 @@
 <div id="results" class="screen hidden">
   <div class="panel">
     <h2 id="resTitle">Splashdown!</h2>
+    <div class="medalWrap"><canvas id="medalCanvas" width="72" height="90"></canvas></div>
     <div class="big" id="resDist">0 m</div>
     <div id="resBestNote"></div>
-    <p id="resLine" style="margin:6px 0 12px; font-size:13px; color:#245;"></p>
+    <div id="resBreakdown" class="breakdown"></div>
+    <p id="resLine" style="margin:4px 0 10px; font-size:12.5px; color:#245;"></p>
     <div class="rowbtns">
       <button class="btn" id="againBtn">Play again 🔁</button>
       <button class="btn pink" id="menuBtn">Menu</button>
@@ -401,6 +414,7 @@ const SAVE_KEY = 'oceanskips-save-v3';
 const SAVE_KEY_V2 = 'oceanskips-save-v2';
 let save = { food: 0, best: 0, runs: 0, fish: 'chispa', muted: false, pearls: 0,
              unlocked: { chispa: true }, missions: [], missionCursor: 0,
+             records: { skips: 0, tricks: 0, sweetSkips: 0, nearMisses: 0, comboBest: 0, bigAir: 0 },
              up: { power: 0, slick: 0, rubber: 0, magnet: 0, chili: 0, sail: 0 } };
 try {
   const raw = localStorage.getItem(SAVE_KEY);
@@ -523,6 +537,7 @@ const sfx = {
   chiliPickup: () => { tone(300, 0.2, { type: 'square', vol: 0.14, slide: 260 }); noiseBurst(900, 0.14, { vol: 0.1 }); },
   unlock:  () => [392, 523, 659, 784, 1047].forEach((f, i) => tone(f, 0.16, { type: 'square', vol: 0.11, delay: i * 0.08 })),
   mission: () => [523, 784].forEach((f, i) => tone(f, 0.12, { type: 'triangle', vol: 0.1, delay: i * 0.06 })),
+  medal:   () => [392, 523, 659, 880, 1047, 1319].forEach((f, i) => tone(f, 0.15, { type: 'square', vol: 0.1, delay: i * 0.07 })),
 };
 
 /* ---------- wind whoosh: continuous filtered noise, gain AND pitch track
@@ -1415,6 +1430,57 @@ function checkUnlocks() {
   }
   return newly;
 }
+/* ---------- results: score, medals, records ---------- */
+// run score = distance + weighted skill stats — skips and sweet skips are
+// common so they're worth less each; tricks and near-misses take real
+// risk, so they're worth more
+function runScore(m) {
+  return m + run.skips * 4 + run.tricks * 25 + run.sweetSkips * 10 + run.nearMisses * 15;
+}
+const MEDALS = [
+  { id: 'gold', score: 900, c1: '#fff3b0', c2: '#e0a838', ribbon: '#d81b74' },
+  { id: 'silver', score: 450, c1: '#f4f6f8', c2: '#9aa5ad', ribbon: '#43c6e0' },
+  { id: 'bronze', score: 150, c1: '#e8b98a', c2: '#a9713a', ribbon: '#59c9a5' },
+];
+function medalFor(score) {
+  for (const md of MEDALS) if (score >= md.score) return md;
+  return null;
+}
+function drawMedal(medal) {
+  const cv = $('medalCanvas'), c = cv.getContext('2d');
+  c.clearRect(0, 0, cv.width, cv.height);
+  if (!medal) return;
+  const cx = cv.width / 2, cy = 32, r = 25;
+  c.lineWidth = 2.5; c.strokeStyle = FISH_INK;
+  c.fillStyle = medal.ribbon;
+  c.beginPath(); c.moveTo(cx - 13, cy + 8); c.lineTo(cx - 19, cy + 56); c.lineTo(cx - 7, cy + 44); c.closePath(); c.fill(); c.stroke();
+  c.beginPath(); c.moveTo(cx + 13, cy + 8); c.lineTo(cx + 19, cy + 56); c.lineTo(cx + 7, cy + 44); c.closePath(); c.fill(); c.stroke();
+  const g = c.createRadialGradient(cx - 8, cy - 8, 4, cx, cy, r);
+  g.addColorStop(0, medal.c1); g.addColorStop(1, medal.c2);
+  c.fillStyle = g;
+  c.beginPath(); c.arc(cx, cy, r, 0, TAU); c.fill(); c.stroke();
+  c.fillStyle = 'rgba(255,255,255,0.55)';
+  c.beginPath();
+  for (let i = 0; i < 5; i++) {
+    const a = -Math.PI / 2 + i * (TAU / 5), a2 = a + Math.PI / 5;
+    const x1 = cx + Math.cos(a) * 12, y1 = cy + Math.sin(a) * 12;
+    const x2 = cx + Math.cos(a2) * 5, y2 = cy + Math.sin(a2) * 5;
+    if (i === 0) c.moveTo(x1, y1); else c.lineTo(x1, y1);
+    c.lineTo(x2, y2);
+  }
+  c.closePath(); c.fill();
+}
+function pickTitle(m, best, medal) {
+  if (medal?.id === 'gold') return '¡Leyenda Dorada! 🥇';
+  if (best && m > 0) return 'Legend of the Sea!';
+  if (medal?.id === 'silver') return '¡Plata brillante! 🥈';
+  if (medal?.id === 'bronze') return '¡Bronce! Nice one! 🥉';
+  if (m < 40) return 'Splashdown!';
+  if (m < 150) return 'Not bad!';
+  if (m < 350) return '¡Órale! Nice one!';
+  if (m < 550) return 'The seagulls are impressed!';
+  return 'Absolutely oceanic!';
+}
 function endRun() {
   state = 'done';
   hud(false);
@@ -1424,27 +1490,50 @@ function endRun() {
   const isBest = m > save.best;
   if (isBest) save.best = m;
   const newlyUnlocked = checkUnlocks();
+
+  // record-tracking: a fresh personal best on any of these tags that row
+  const statRecords = { skips: run.skips, tricks: run.tricks, sweetSkips: run.sweetSkips,
+    nearMisses: run.nearMisses, comboBest: run.comboBest, bigAir: run.bigAir };
+  const isNewRecord = {};
+  for (const key in statRecords) {
+    if (statRecords[key] > save.records[key]) { save.records[key] = statRecords[key]; isNewRecord[key] = true; }
+  }
+
+  const score = runScore(m);
+  const medal = medalFor(score);
   persist();
-  document.getElementById('resTitle').textContent = pickTitle(m, isBest);
+
+  document.getElementById('resTitle').textContent = pickTitle(m, isBest, medal);
   document.getElementById('resDist').textContent = m + ' m';
   document.getElementById('resBestNote').innerHTML = isBest
     ? '<span class="newbest">🏆 NEW BEST!</span>' : `Best: ${save.best} m`;
+  drawMedal(medal);
+
+  const bestMult = 1 + Math.min(MULT_MAX, Math.floor(run.comboBest / COMBO_TIER));
+  const row = (label, value, record) =>
+    `<div>${label}</div><b>${value}${record ? '<span class="newrecord">NEW RECORD</span>' : ''}</b>`;
+  const rows = [
+    ['Skips', `${run.skips} <small>(best combo ×${bestMult})</small>`, isNewRecord.skips || isNewRecord.comboBest],
+    ['Tricks', run.tricks, isNewRecord.tricks],
+    ['Sweet skips', run.sweetSkips, isNewRecord.sweetSkips],
+    ['Near-misses', run.nearMisses, isNewRecord.nearMisses],
+    ['Big Air', run.bigAir, isNewRecord.bigAir],
+    ['Food', `🟡 ${run.food}`, false],
+    ['Pearls', `🦪 ${run.pearls}`, false],
+  ];
+  document.getElementById('resBreakdown').innerHTML = rows
+    .map(([label, value, record], i) =>
+      `<div class="row" style="animation-delay:${(i * 0.07).toFixed(2)}s">${row(label, value, record)}</div>`)
+    .join('');
+
   document.getElementById('resLine').textContent =
-    `${run.skips} skip${run.skips === 1 ? '' : 's'} · 🟡 ${run.food} fish food` +
-    (run.dist > OPEN_OCEAN ? ' · you reached the open ocean! 🌑🌊' : '') +
-    (newlyUnlocked.length ? ` · ¡Nuevo pez! ${newlyUnlocked.map((f) => f.name).join(', ')} 🐟✨` : '') +
-    (run.missionsCompleted.length ? ` · ✔ ${run.missionsCompleted.map((mm) => mm.text).join(', ')}` : '');
+    (run.dist > OPEN_OCEAN ? 'You reached the open ocean! 🌑🌊 ' : '') +
+    (newlyUnlocked.length ? `¡Nuevo pez! ${newlyUnlocked.map((f) => f.name).join(', ')} 🐟✨ ` : '') +
+    (run.missionsCompleted.length ? `✔ ${run.missionsCompleted.map((mm) => mm.text).join(', ')}` : '');
   showScreen('results');
   if (newlyUnlocked.length) sfx.unlock();
+  else if (medal) sfx.medal();
   else if (isBest && m > 0) sfx.best();
-}
-function pickTitle(m, best) {
-  if (best && m > 0) return 'Legend of the Sea!';
-  if (m < 40) return 'Splashdown!';
-  if (m < 150) return 'Not bad!';
-  if (m < 350) return '¡Órale! Nice one!';
-  if (m < 550) return 'The seagulls are impressed!';
-  return 'Absolutely oceanic!';
 }
 
 /* ---------- physics ---------- */
@@ -3344,6 +3433,8 @@ window.OceanSkips = {
   grantPearls(n) { save.pearls += n; persist(); },   // test/debug helper
   MISSIONS, checkMissions,   // exposed for mission tests
   setActiveMissions(ids) { save.missions = ids.map((id) => ({ id })); },   // test-only
+  runScore, medalFor, MEDALS,   // exposed for results/medal tests
+  get records() { return { ...save.records }; },
 };
 
 /* ---------- cache-busting service worker ---------- */
