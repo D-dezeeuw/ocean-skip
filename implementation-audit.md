@@ -56,9 +56,43 @@ economy and scoring surfaces previously had **zero** coverage. Regressions
 were added for each fixed defect, including the 60Hz dead band, the 30Hz
 false-strip, and sweet-skip reachability.
 
+## Follow-up: skip-chain feel
+
+Reported after the pass above: *"the fish bounces degrades too fast, it goes
+from one bounce to skipping along the water until fatigue."* Measured hop
+apexes confirmed it exactly — **327 → 107 → 33 → 10 → 2px**, then ~2px for the
+remaining fifteen skips. The fish was sliding on the surface for roughly 80%
+of every run.
+
+Cause: restitution scales the *normal* velocity component by `e` (0.58) on
+every bounce, so hop height decays as `e² ≈ 0.34×` per skip and nothing ever
+replenishes it. The "keep shallow grazes lively" floor worked out to ~75 px/s,
+which is a 1.9px hop.
+
+Fix: a real planing contact is thrown back up by the water it displaces, so
+the rebound is now set by how fast the fish is travelling *now* rather than by
+whatever vertical velocity survived the previous impact (`SKIM_LIFT`). The
+falloff exponent is deliberately sub-linear (0.65) — a linear falloff still
+left the tail of each run as 2px slides, because lift faded exactly as fast as
+the speed driving it.
+
+Measured after: **322 → 97 → 32 → 28 → 26 → 22 → 19 → 16 → 13 → 11 → 8px** —
+a gradual fade with no cliff. Average distance rose 103m → 174m (+69%) while
+food per run went slightly *down* (150 → 132), so the economy did not inflate.
+
+`SWEET_SKIP_STEEP` had to be retuned 0.28 → 0.38 as a consequence: real arcs
+mean steeper contact angles, and the old threshold sat below the entire new
+distribution (median 0.41), which would have made sweet skips unreachable a
+second time. Sweet skips now fire on ~6% of skips *when the boost-dive is
+used*, and none when coasting — the dive is the agency.
+
+`tests/skip-feel.mjs` guards the shape of the decay rather than any single
+value, which is the only kind of test that would have caught the original bug.
+
 ## Deferred (deliberately)
 
-- **Distance rescale.** The highest-value remaining change: compressing the
+- **Distance rescale.** Partly relieved by the skip-feel fix above, which
+  lifted typical runs from ~103m to ~174m without touching any threshold. The highest-value remaining change: compressing the
   distance scale so a run genuinely crosses several named sea states. Not
   done here because it redefines every stored number — best distances,
   unlock thresholds (250m), mission targets (200m/400m) and medal cutoffs.

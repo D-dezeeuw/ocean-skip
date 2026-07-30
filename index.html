@@ -298,8 +298,26 @@ const BOOST_DIVE = 260;         // px/s² added downward pull while holding — 
 const BOOST_DRAIN = 30;         // energy per second
 const TRAIL_MAX = 22;           // motion-trail ribbon: max sampled points
 const TRAIL_DT = 0.018;         // seconds between trail samples (~55/s, not every physics tick)
+// Upward impulse a full-speed grazing skip gets back from the water, and the
+// curve by which it falls off as the fish tires. The exponent is deliberately
+// sub-linear: a linear falloff still left the last third of a run as ~2px
+// surface slides, because lift faded as fast as speed did. At 0.65 a fresh
+// skip arcs ~94px and a nearly-spent one still arcs ~12px, so the run reads
+// as a fading arc all the way to the sink instead of a slide.
+const SKIM_LIFT = 530;
+const SKIM_LIFT_FALLOFF = 0.65;
 const SPEED_LINES_MIN = 1600;   // px/s above which speed-line streaks appear
-const SWEET_SKIP_STEEP = 0.28;  // contact must be this grazing (0=flat, 1=vertical) or shallower
+// Contact must be this grazing (0 = flat, 1 = vertical) or shallower. This
+// tracks the water-reaction lift: because a skip leaves at ~SKIM_LIFT and
+// returns at roughly the same vertical speed, the natural contact angle sits
+// around lift/speed — measured median 0.41, spread 0.34-0.48. The threshold
+// is set just under the lower quartile so a sweet skip means "you came in
+// flatter than usual for this speed", which is what carrying speed and using
+// the boost-dive actually buys you. In practice the downslope requirement is
+// the binding constraint (loosening this to 0.40 does not move the in-play
+// rate), so a sweet skip lands on roughly 6% of skips. Retune whenever
+// SKIM_LIFT moves; tests/skip-feel.mjs guards the resulting in-play rate.
+const SWEET_SKIP_STEEP = 0.38;
 // Minimum downslope magnitude (s.slope) to count as a real descending face.
 // This is deliberately a small deadzone, not the skill gate — it only rules
 // out flat/rising water. The actual skill test is the grazing-contact check
@@ -1949,7 +1967,22 @@ function stepPhysics(dt) {
           splash(run.x, s.y, speed * (0.4 + steep));
           beginSink();
         } else {
-          run.vy = Math.max(run.vy, 55 + (newSp - need) * 0.05); // keep shallow grazes lively
+          // Water-reaction lift. A planing contact is thrown back up by the
+          // water it displaces, so the hop it produces is set by how fast the
+          // fish is travelling *now* — not by whatever vertical velocity
+          // survived the last impact. Pure restitution scales the normal
+          // component by `e` every skip, which makes hop height decay as e²
+          // (~0.34x each time): measured apexes ran 327 -> 107 -> 33 -> 10 ->
+          // 2px, so from the fourth skip on the fish was sliding along the
+          // surface rather than skipping, for most of the run. Scaling the
+          // rebound with speed instead makes the arc fade out gradually as
+          // the fish tires, which is the intended feel.
+          const speedFrac = Math.pow(clamp(newSp / LAUNCH_BASE, 0, 1), SKIM_LIFT_FALLOFF);
+          // a plunging contact still gets much less back than a grazing one,
+          // so the belly-flop penalty and sweet-skip reward keep their meaning
+          const grazeFrac = 1 - clamp(steep, 0, 0.7) / 0.7 * 0.55;
+          const skimLift = SKIM_LIFT * speedFrac * grazeFrac;
+          run.vy = Math.max(run.vy, skimLift, 55 + (newSp - need) * 0.05);
           if (time - run.lastBounceT > 0.09) {
             run.lastBounceT = time;
             run.skips++;
