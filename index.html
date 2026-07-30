@@ -256,6 +256,9 @@ const ENERGY_FOOD = 25;         // energy per golden sphere
 const BOOST_ACC = 660;          // px/s² while holding
 const BOOST_DIVE = 260;         // px/s² added downward pull while holding — dive to aim your landing spot
 const BOOST_DRAIN = 30;         // energy per second
+const TRAIL_MAX = 22;           // motion-trail ribbon: max sampled points
+const TRAIL_DT = 0.018;         // seconds between trail samples (~55/s, not every physics tick)
+const SPEED_LINES_MIN = 1600;   // px/s above which speed-line streaks appear
 
 /* ---------- the fish ---------- */
 const FISH = [
@@ -881,6 +884,8 @@ const run = {
   energy: 0, maxEnergy: 100,
   lastBounceT: 0, boostSfxT: 0, zoneShown: 0,
   hopApex: 0,   // highest y reached since the last bounce — Big Air scoring
+  squashT: -1,  // time of the last impact (swing contact / bounce) — drives squash&stretch
+  trail: [],    // {x,y} ribbon of recent positions while flying — motion trail
 };
 const BIG_AIR_Y = 260; // world y a hop's apex must clear to score Big Air
 let bigAirCount = 0; // debug/test counter, not shown in-game
@@ -1084,6 +1089,7 @@ function startRun() {
   run.x = BAT_X + 40; run.y = TOSS_Y; run.vx = 0; run.vy = 0;
   run.skips = 0; run.food = 0; run.dist = 0; run.sinkT = 0; run.spinning = 0;
   run.tossVy = 0; run.swingT = -1; run.lastBounceT = -1; run.zoneShown = 0; run.hopApex = TOSS_Y;
+  run.squashT = -1; run.trail = [];
   run.maxEnergy = st.maxEnergy;
   run.energy = Math.min(run.maxEnergy, 55 + save.up.chili * 8);
   cam.x = 0; cam.y = 0;
@@ -1128,6 +1134,7 @@ function swing() {
   state = 'fly';
   held = false;                       // require a fresh press for boosting
   run.hopApex = run.y;
+  run.squashT = time;
   sfx.crack(q);
   puff(run.x, run.y, 12, '#ffe9b0', 300, 800, 4, 0.4);
   setHint('Hold anywhere to BOOST 🌶️ — golden snacks refill energy!');
@@ -1196,7 +1203,9 @@ function stepPhysics(dt) {
       run.vy += (run.vy / sp) * BOOST_ACC * dt - BOOST_DIVE * dt;
       run.energy = Math.max(0, run.energy - BOOST_DRAIN * dt);
       if (time - run.boostSfxT > 0.1) { sfx.boost(); run.boostSfxT = time; }
-      if (Math.random() < dt * 40) particles.push({
+      // the flame itself is drawn (drawBoostFlame); just a few loose embers
+      // kicking off it for extra spice
+      if (Math.random() < dt * 12) particles.push({
         x: run.x - rand(10, 26), y: run.y + rand(-8, 8),
         vx: -run.vx * 0.15, vy: rand(-30, 30),
         life: 0.35, maxLife: 0.35, size: rand(2, 5), color: '#ff9800', grav: 0 });
@@ -1228,6 +1237,15 @@ function stepPhysics(dt) {
     run.hopApex = Math.max(run.hopApex, run.y);
     run.wiggle += dt * (6 + Math.hypot(run.vx, run.vy) * 0.004);
     updateWindAudio(rsp, run.y);
+
+    // motion trail: sample position at a fixed cadence (not every physics
+    // step — that'd bunch 22 points into a fraction of a second) so the
+    // ribbon spans a readable stretch of recent flight
+    const lastTrail = run.trail[run.trail.length - 1];
+    if (!lastTrail || time - lastTrail.t >= TRAIL_DT) {
+      run.trail.push({ x: run.x, y: run.y, t: time, sp: Math.hypot(run.vx, run.vy) });
+      if (run.trail.length > TRAIL_MAX) run.trail.shift();
+    }
 
     // gust fronts: crossing an untriggered wall gives a temporary wind spike
     for (const gEvt of gustEvents) {
@@ -1842,8 +1860,115 @@ function drawFishShape(c, f, t, opts = {}) {
   }
 }
 
+// motion-trail ribbon: drawn in plain screen space (not the fish's rotated
+// local frame) since it's a history of past world positions, not part of
+// the fish's own silhouette
+function drawFishTrail() {
+  if (REDUCED_MOTION || run.trail.length < 2) return;
+  ctx.save();
+  ctx.lineCap = 'round';
+  const n = run.trail.length;
+  for (let i = 1; i < n; i++) {
+    const a = run.trail[i - 1], b = run.trail[i];
+    const age = i / n; // 0 = oldest, 1 = newest
+    const width = fishDef.size * 0.42 * age;
+    if (width < 0.6) continue;
+    ctx.lineWidth = width;
+    ctx.strokeStyle = fishDef.colors.body;
+    ctx.globalAlpha = 0.2 * age;
+    ctx.beginPath();
+    ctx.moveTo(w2sx(a.x), w2sy(a.y));
+    ctx.lineTo(w2sx(b.x), w2sy(b.y));
+    ctx.stroke();
+    if (b.sp > 1400) { // additive white core at high speed
+      ctx.strokeStyle = '#ffffff';
+      ctx.globalAlpha = 0.3 * age * clamp((b.sp - 1400) / 700, 0, 1);
+      ctx.lineWidth = width * 0.35;
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+// nearest uneaten food ahead of/beside the fish — used only to give the
+// pupils something to glance toward; returns the food's world-y offset
+// from the fish (positive = above) or null if nothing qualifies
+function nearestFoodDy() {
+  let bestD = Infinity, bestDy = null;
+  for (const f of foods) {
+    if (f.taken) continue;
+    const dx = f.x - run.x;
+    if (dx < -20 || dx > 260) continue;
+    const s0 = surfaceAt(f.x, time);
+    const fy = s0.y + f.baseY + Math.sin(time * 2 + f.phase) * 6;
+    const dy = fy - run.y;
+    const d = Math.hypot(dx, dy);
+    if (d < bestD) { bestD = d; bestDy = dy; }
+  }
+  return bestD < 260 ? bestDy : null;
+}
+
+// per-fish blink cadence: one ~0.12s blink every ~2.6-3.6s, timed
+// differently per fish (hash01 offset) so a school wouldn't blink in sync
+function isBlinking(fishSeed) {
+  const period = 2.6 + hash01(fishSeed + 11.1) * 1.0;
+  const cycle = Math.floor(time / period);
+  const phase = time - cycle * period;
+  const blinkAt = 0.3 + hash01(cycle * 17.3 + fishSeed) * (period - 0.6);
+  return Math.abs(phase - blinkAt) < 0.06;
+}
+
+// two-layer chili-flame cone, drawn in the fish's rotated local frame
+// (local -x = behind the tail), with a hash01-driven flicker so it doesn't
+// look like a static decal
+function drawBoostFlame(size) {
+  const flick = 0.85 + 0.3 * hash01(Math.floor(time * 30));
+  const len = size * (0.9 + 0.3 * hash01(Math.floor(time * 22) + 5.5)) * flick;
+  const baseX = -size * 0.62, w = size * 0.22;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = '#ff7a1a';
+  ctx.globalAlpha = 0.75;
+  ctx.beginPath();
+  ctx.moveTo(baseX, -w); ctx.quadraticCurveTo(baseX - len, 0, baseX, w);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#ffe066';
+  ctx.globalAlpha = 0.85;
+  ctx.beginPath();
+  ctx.moveTo(baseX, -w * 0.5); ctx.quadraticCurveTo(baseX - len * 0.6, 0, baseX, w * 0.5);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+// short streaks trailing behind the fish (local -x, post-rotation) when
+// airspeed clears SPEED_LINES_MIN — hash01-seeded on a coarse time bucket so
+// they hold still for a few frames rather than jittering every draw
+function drawSpeedLines(speed, size) {
+  const bucket = Math.floor(time * 16);
+  const strength = clamp((speed - SPEED_LINES_MIN) / 900, 0, 1);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 1.6;
+  for (let i = 0; i < 4; i++) {
+    const s1 = hash01(bucket * 3.1 + i * 7.7), s2 = hash01(bucket * 3.1 + i * 7.7 + 1.3);
+    const yOff = (s1 - 0.5) * size * 1.5;
+    const startX = -size * (0.55 + s2 * 0.35);
+    const len = size * (0.35 + strength * 0.4);
+    ctx.globalAlpha = 0.35 + strength * 0.35;
+    ctx.beginPath();
+    ctx.moveTo(startX, yOff);
+    ctx.lineTo(startX - len, yOff);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function drawFish() {
   if (state === 'menu' || state === 'shop' || state === 'done') return;
+  drawFishTrail();
+  const speed = state === 'fly' ? Math.hypot(run.vx, run.vy) : 0;
   ctx.save();
   ctx.translate(w2sx(run.x), w2sy(run.y));
   let ang = 0;
@@ -1851,8 +1976,35 @@ function drawFish() {
   else if (state === 'sink') ang = Math.sin(run.spinning) * 0.6 + 0.5;
   else if (state === 'fly') ang = -Math.atan2(run.vy, Math.max(80, run.vx));
   ctx.rotate(ang);
+
+  // boost flame, drawn behind the tail (local -x) before the body
+  if (state === 'fly' && held && run.energy > 0) drawBoostFlame(fishDef.size);
+
+  // squash & stretch: modest stretch at speed, a sharp squash pulse right
+  // after an impact (swing contact or a bounce) that eases out over ~0.12s
+  const stretch = clamp(speed / 2600, 0, 0.2);
+  const squashPulse = run.squashT >= 0 ? 0.5 * Math.exp(-(time - run.squashT) / 0.12) : 0;
+  const sq = clamp(stretch - squashPulse, -0.4, 0.22);
+  ctx.scale(1 + sq, 1 - sq * 0.8);
+
+  if (!REDUCED_MOTION && speed > SPEED_LINES_MIN) drawSpeedLines(speed, fishDef.size);
+
   if (state === 'sink') ctx.globalAlpha = clamp(1.2 - run.sinkT * 0.55, 0.25, 1);
-  drawFishShape(ctx, fishDef, run.wiggle, { worried: state === 'sink' });
+
+  const st2 = state === 'fly' ? stats() : null;
+  const surf2 = state === 'fly' ? surfaceAt(run.x, time) : null;
+  const nervous = state === 'fly' && st2 && speed < st2.minSkim * 1.15 && (run.y - surf2.y) < 90;
+  const foodDy = state === 'fly' ? nearestFoodDy() : null;
+  const opts = {
+    worried: state === 'sink',
+    nervous,
+    blink: state === 'fly' && !nervous && isBlinking(fishDef.id.charCodeAt(0)),
+    pupilA: foodDy != null ? clamp(foodDy / 140, -1, 1) * 0.5 : 0,
+    mouthOpen: state === 'fly' && ((held && run.energy > 0) || (foodDy != null && Math.abs(foodDy) < 60)),
+    speed,
+    spikeExt: state === 'sink' ? 1 : clamp((speed - 900) / 1400, 0, 1),
+  };
+  drawFishShape(ctx, fishDef, run.wiggle, opts);
   if (state === 'sink' && assets.caustics.loaded) {
     // caustic dapples projected onto the sinking fish — same scrolling
     // pattern as drawSea's water layer, 'multiply'-blended so it reads as
