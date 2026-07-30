@@ -1567,63 +1567,196 @@ function drawLuchador() {
   ctx.restore();
 }
 
+// per-shape body half-height as a fraction of f.size — each of the six
+// silhouettes gets its own proportions instead of sharing one ellipse
+const FISH_HH = { slim: 0.44, wing: 0.48, puff: 0.86, dart: 0.42, tank: 0.62, sail: 0.46 };
+const FISH_INK = '#1e2a3a';
+const SIL_FILL = '#1c2b40', SIL_INK = '#111c2c'; // locked-card silhouette colors
+
+// 5-stop body shading: dark back → rim highlight → flank → hard belly line
+function fishBodyGrad(c, f, Hh) {
+  const g = c.createLinearGradient(0, -Hh, 0, Hh);
+  g.addColorStop(0, mixHex(f.colors.body, FISH_INK, 0.38));
+  g.addColorStop(0.16, mixHex(f.colors.body, '#ffffff', 0.3));
+  g.addColorStop(0.34, f.colors.body);
+  g.addColorStop(0.62, f.colors.body);
+  g.addColorStop(0.66, f.colors.belly);
+  g.addColorStop(1, f.colors.belly);
+  return g;
+}
+
 function drawFishShape(c, f, t, opts = {}) {
   // draws centred at (0,0) facing +x — caller sets the transform on ctx `c`
-  const L = f.size, Hh = f.shape === 'puff' ? f.size * 0.86 : f.size * 0.5;
-  const wig = Math.sin(t * 9) * 0.12;
+  const L = f.size, Hh = f.size * (FISH_HH[f.shape] || 0.5);
+  const sil = !!opts.silhouette;
+  // tail whips harder at speed and lags a beat behind the body-mounted fins
+  const wigAmp = 0.1 + clamp((opts.speed || 0) / 2400, 0, 1) * 0.1;
+  const wig = Math.sin(t * 9) * wigAmp;
+  const wigTail = Math.sin(t * 9 - 0.7) * wigAmp * 1.5;
+  const seed = (f.id.charCodeAt(0) + f.id.length * 7) * 3.1;
+  const ink = sil ? SIL_INK : FISH_INK;
+  const finCol = sil ? SIL_FILL : f.colors.fin;
   c.lineWidth = 2.5;
-  c.strokeStyle = '#1e2a3a';
+  c.strokeStyle = ink;
 
-  // tail
-  c.fillStyle = f.colors.fin;
+  // ---- tail (behind the body) ----
+  c.fillStyle = finCol;
   c.beginPath();
-  c.moveTo(-L * 0.42, 0);
-  c.lineTo(-L * 0.72, Hh * (0.55 + wig));
-  c.lineTo(-L * 0.72, -Hh * (0.55 - wig));
-  c.closePath();
-  c.fill(); c.stroke();
+  if (f.shape === 'slim' || f.shape === 'wing') {          // forked two-lobe
+    c.moveTo(-L * 0.36, 0);
+    c.quadraticCurveTo(-L * 0.5, -Hh * 0.16, -L * 0.76, -Hh * (0.72 - wigTail));
+    c.quadraticCurveTo(-L * 0.6, -Hh * 0.12, -L * 0.54, 0);
+    c.quadraticCurveTo(-L * 0.6, Hh * 0.12, -L * 0.76, Hh * (0.72 + wigTail));
+    c.quadraticCurveTo(-L * 0.5, Hh * 0.16, -L * 0.36, 0);
+  } else if (f.shape === 'dart' || f.shape === 'tank') {   // stiff crescent
+    c.moveTo(-L * 0.38, 0);
+    c.lineTo(-L * 0.52, -Hh * 0.1);
+    c.quadraticCurveTo(-L * 0.56, -Hh * 0.34, -L * 0.78, -Hh * (0.7 - wigTail));
+    c.quadraticCurveTo(-L * 0.6, 0, -L * 0.78, Hh * (0.7 + wigTail));
+    c.quadraticCurveTo(-L * 0.56, Hh * 0.34, -L * 0.52, Hh * 0.1);
+  } else if (f.shape === 'sail') {                          // slender sickle
+    c.moveTo(-L * 0.38, 0);
+    c.lineTo(-L * 0.5, -Hh * 0.08);
+    c.quadraticCurveTo(-L * 0.52, -Hh * 0.4, -L * 0.82, -Hh * (0.85 - wigTail));
+    c.quadraticCurveTo(-L * 0.58, 0, -L * 0.82, Hh * (0.85 + wigTail));
+    c.quadraticCurveTo(-L * 0.52, Hh * 0.4, -L * 0.5, Hh * 0.08);
+  } else {                                                  // puff: little fan
+    c.moveTo(-L * 0.4, 0);
+    c.quadraticCurveTo(-L * 0.62, -Hh * (0.3 - wigTail * 0.6), -L * 0.66, -Hh * (0.18 - wigTail));
+    c.quadraticCurveTo(-L * 0.7, Hh * 0.02, -L * 0.66, Hh * (0.2 + wigTail));
+    c.quadraticCurveTo(-L * 0.62, Hh * 0.32, -L * 0.4, 0);
+  }
+  c.closePath(); c.fill(); c.stroke();
 
-  // body
-  const grad = c.createLinearGradient(0, -Hh, 0, Hh);
-  grad.addColorStop(0, f.colors.body);
-  grad.addColorStop(0.62, f.colors.body);
-  grad.addColorStop(0.66, f.colors.belly);
-  grad.addColorStop(1, f.colors.belly);
-  c.fillStyle = grad;
+  // sailfish bill, tucked under the head before the body goes down
+  if (f.shape === 'sail') {
+    c.fillStyle = sil ? SIL_FILL : mixHex(f.colors.body, FISH_INK, 0.2);
+    c.beginPath();
+    c.moveTo(L * 0.4, -Hh * 0.12);
+    c.quadraticCurveTo(L * 0.7, -Hh * 0.1, L * 0.88, -Hh * 0.02);
+    c.quadraticCurveTo(L * 0.7, Hh * 0.02, L * 0.4, Hh * 0.08);
+    c.closePath(); c.fill(); c.stroke();
+  }
+
+  // ---- body ----
+  c.fillStyle = sil ? SIL_FILL : fishBodyGrad(c, f, Hh);
   c.beginPath();
-  c.ellipse(0, 0, L * 0.5, Hh * 0.62, 0, 0, TAU);
-  c.fill(); c.stroke();
+  if (f.shape === 'puff') {                 // a ball with lips
+    c.ellipse(0, 0, L * 0.46, Hh * 0.72, 0, 0, TAU);
+  } else if (f.shape === 'dart') {          // torpedo with a pointed snout
+    c.moveTo(L * 0.58, 0);
+    c.quadraticCurveTo(L * 0.3, -Hh * 0.58, -L * 0.02, -Hh * 0.55);
+    c.quadraticCurveTo(-L * 0.3, -Hh * 0.48, -L * 0.42, -Hh * 0.14);
+    c.lineTo(-L * 0.42, Hh * 0.12);
+    c.quadraticCurveTo(-L * 0.3, Hh * 0.44, 0, Hh * 0.5);
+    c.quadraticCurveTo(L * 0.34, Hh * 0.52, L * 0.58, 0);
+  } else if (f.shape === 'tank') {          // deep heavy slab with a stout chin
+    c.moveTo(L * 0.48, -Hh * 0.08);
+    c.quadraticCurveTo(L * 0.3, -Hh * 0.66, -L * 0.02, -Hh * 0.62);
+    c.quadraticCurveTo(-L * 0.3, -Hh * 0.52, -L * 0.38, -Hh * 0.14);
+    c.lineTo(-L * 0.38, Hh * 0.12);
+    c.quadraticCurveTo(-L * 0.3, Hh * 0.5, 0, Hh * 0.6);
+    c.quadraticCurveTo(L * 0.3, Hh * 0.62, L * 0.46, Hh * 0.18);
+    c.quadraticCurveTo(L * 0.52, Hh * 0.04, L * 0.48, -Hh * 0.08);
+  } else if (f.shape === 'sail') {          // long and low-slung
+    c.moveTo(L * 0.5, -Hh * 0.04);
+    c.quadraticCurveTo(L * 0.26, -Hh * 0.56, -L * 0.04, -Hh * 0.54);
+    c.quadraticCurveTo(-L * 0.3, -Hh * 0.48, -L * 0.42, -Hh * 0.14);
+    c.lineTo(-L * 0.42, Hh * 0.12);
+    c.quadraticCurveTo(-L * 0.28, Hh * 0.44, 0, Hh * 0.48);
+    c.quadraticCurveTo(L * 0.3, Hh * 0.46, L * 0.5, Hh * 0.02);
+  } else {                                  // slim/wing: streamlined sardine
+    c.moveTo(L * 0.5, -Hh * 0.06);
+    c.quadraticCurveTo(L * 0.3, -Hh * 0.6, L * 0.02, -Hh * 0.58);
+    c.quadraticCurveTo(-L * 0.28, -Hh * 0.52, -L * 0.38, -Hh * 0.16);
+    c.lineTo(-L * 0.38, Hh * 0.14);
+    c.quadraticCurveTo(-L * 0.28, Hh * 0.46, 0, Hh * 0.52);
+    c.quadraticCurveTo(L * 0.32, Hh * 0.5, L * 0.5, Hh * 0.04);
+  }
+  c.closePath(); c.fill(); c.stroke();
 
-  if (f.shape === 'puff') { // spikes
+  // gill-cover arc + a few stable scale glints (skipped on silhouettes)
+  if (!sil && f.shape !== 'puff') {
+    c.globalAlpha = 0.45;
+    c.lineWidth = 2;
+    c.beginPath();
+    c.moveTo(L * 0.2, -Hh * 0.34);
+    c.quadraticCurveTo(L * 0.05, -Hh * 0.05, L * 0.18, Hh * 0.38);
+    c.stroke();
+    c.globalAlpha = 1;
+    c.lineWidth = 2.5;
+  }
+  if (!sil) {
+    c.fillStyle = 'rgba(255,255,255,0.3)';
+    for (let i = 0; i < 4; i++) {
+      const gx = lerp(-L * 0.24, L * 0.06, hash01(seed + i * 7.3));
+      const gy = lerp(-Hh * 0.3, Hh * 0.16, hash01(seed + i * 3.7));
+      c.beginPath(); c.ellipse(gx, gy, L * 0.045, L * 0.026, -0.4, 0, TAU); c.fill();
+    }
+  }
+
+  if (f.shape === 'puff') { // spikes, extending while puffed (boost/sink)
+    const ext = clamp(opts.spikeExt || 0, 0, 1);
     c.lineWidth = 2;
     for (let i = 0; i < 10; i++) {
       const a = (i / 10) * TAU + 0.3;
       c.beginPath();
-      c.moveTo(Math.cos(a) * L * 0.48, Math.sin(a) * Hh * 0.6);
-      c.lineTo(Math.cos(a) * L * 0.56, Math.sin(a) * Hh * 0.72);
+      c.moveTo(Math.cos(a) * L * 0.44, Math.sin(a) * Hh * 0.68);
+      c.lineTo(Math.cos(a) * L * (0.52 + 0.1 * ext), Math.sin(a) * Hh * (0.78 + 0.16 * ext));
       c.stroke();
     }
     c.lineWidth = 2.5;
   }
-  if (f.shape === 'dart') { // racing stripes
+  if (f.shape === 'dart' && !sil) { // racing stripes
     c.strokeStyle = '#1f7a5f'; c.lineWidth = 2;
     for (let i = -1; i <= 1; i++) {
       c.beginPath();
-      c.moveTo(-L * 0.1 + i * 8, -Hh * 0.5);
-      c.quadraticCurveTo(-L * 0.02 + i * 8, 0, -L * 0.1 + i * 8, Hh * 0.5);
+      c.moveTo(-L * 0.1 + i * 8, -Hh * 0.48);
+      c.quadraticCurveTo(-L * 0.02 + i * 8, 0, -L * 0.1 + i * 8, Hh * 0.46);
       c.stroke();
     }
-    c.strokeStyle = '#1e2a3a'; c.lineWidth = 2.5;
+    c.strokeStyle = ink; c.lineWidth = 2.5;
+  }
+  if (f.shape === 'tank') { // ridge of little tuna finlets along the back
+    c.fillStyle = sil ? SIL_FILL : '#ffd93b';
+    const spots = [[-0.06, -0.6], [-0.13, -0.53], [-0.2, -0.45], [-0.27, -0.36], [-0.33, -0.27]];
+    for (const [px, py] of spots) {
+      c.beginPath();
+      c.moveTo(L * px, Hh * py);
+      c.lineTo(L * (px - 0.045), Hh * (py - 0.14));
+      c.lineTo(L * (px - 0.06), Hh * (py + 0.02));
+      c.closePath(); c.fill(); c.stroke();
+    }
   }
 
-  // pectoral fin (big wing for the flying fish)
-  c.fillStyle = f.colors.fin;
+  // ---- pectoral fin (huge double-layer wing for the flying fish) ----
+  c.fillStyle = finCol;
   if (f.shape === 'wing') {
+    c.fillStyle = sil ? SIL_FILL : mixHex(f.colors.fin, FISH_INK, 0.3);
+    c.beginPath(); // under-wing, a darker layer peeking out behind
+    c.moveTo(-L * 0.02, -Hh * 0.15);
+    c.quadraticCurveTo(-L * 0.45, -Hh * (1.5 + wig * 2), -L * 0.78, -Hh * (0.9 + wig * 2));
+    c.quadraticCurveTo(-L * 0.36, -Hh * 0.35, -L * 0.02, -Hh * 0.15);
+    c.fill(); c.stroke();
+    c.fillStyle = finCol;
     c.beginPath();
     c.moveTo(-L * 0.05, -Hh * 0.2);
     c.quadraticCurveTo(-L * 0.5, -Hh * (1.7 + wig * 2), -L * 0.85, -Hh * (1.1 + wig * 2));
     c.quadraticCurveTo(-L * 0.4, -Hh * 0.45, -L * 0.05, -Hh * 0.2);
     c.fill(); c.stroke();
+    if (!sil) { // membrane ribs fanning through the wing
+      c.lineWidth = 1.5; c.globalAlpha = 0.45;
+      for (let i = 1; i <= 3; i++) {
+        const tt = i / 4;
+        c.beginPath();
+        c.moveTo(-L * 0.05, -Hh * 0.2);
+        c.quadraticCurveTo(
+          lerp(-L * 0.18, -L * 0.42, tt), -Hh * (0.4 + tt * (1.1 + wig * 2)),
+          lerp(-L * 0.3, -L * 0.8, tt), -Hh * (0.45 + tt * (0.62 + wig * 2)));
+        c.stroke();
+      }
+      c.globalAlpha = 1; c.lineWidth = 2.5;
+    }
   } else {
     c.beginPath();
     c.moveTo(L * 0.05, Hh * 0.15);
@@ -1632,33 +1765,80 @@ function drawFishShape(c, f, t, opts = {}) {
     c.fill(); c.stroke();
   }
 
-  // top fin — the sailfish gets a dramatic tall dorsal sail instead
-  c.beginPath();
-  if (f.shape === 'sail') {
-    c.moveTo(-L * 0.16, -Hh * 0.5);
-    c.quadraticCurveTo(-L * 0.02, -Hh * (2.5 + wig * 3), L * 0.14, -Hh * 0.56);
-    c.quadraticCurveTo(-L * 0.04, -Hh * 0.72, -L * 0.16, -Hh * 0.5);
-  } else {
-    c.moveTo(-L * 0.05, -Hh * 0.55);
-    c.quadraticCurveTo(-L * 0.22, -Hh * (0.95 + wig), -L * 0.3, -Hh * 0.5);
-  }
-  c.fill(); c.stroke();
-
-  // face
-  c.fillStyle = '#fff';
-  c.beginPath(); c.arc(L * 0.26, -Hh * 0.16, L * 0.1, 0, TAU); c.fill(); c.stroke();
-  c.fillStyle = '#1e2a3a';
-  c.beginPath(); c.arc(L * 0.29, -Hh * 0.16, L * 0.045, 0, TAU); c.fill();
-  c.beginPath(); c.arc(L * 0.3, Hh * 0.12, L * 0.12, 0.2, Math.PI * 0.7); c.stroke();
-  if (opts.worried) { // X eyes when sinking
-    c.fillStyle = '#fff';
-    c.fillRect(L * 0.16, -Hh * 0.3, L * 0.2, Hh * 0.28);
-    c.strokeStyle = '#1e2a3a'; c.lineWidth = 2;
-    const ex = L * 0.26, ey = -Hh * 0.16, r = L * 0.06;
+  // ---- dorsal fin ----
+  c.fillStyle = finCol;
+  if (f.shape === 'sail') { // the dramatic sail, with ribs and spots
     c.beginPath();
-    c.moveTo(ex - r, ey - r); c.lineTo(ex + r, ey + r);
-    c.moveTo(ex + r, ey - r); c.lineTo(ex - r, ey + r);
-    c.stroke();
+    c.moveTo(-L * 0.2, -Hh * 0.45);
+    c.quadraticCurveTo(-L * 0.04, -Hh * (2.2 + wig * 3), L * 0.16, -Hh * 0.5);
+    c.quadraticCurveTo(-L * 0.02, -Hh * 0.7, -L * 0.2, -Hh * 0.45);
+    c.fill(); c.stroke();
+    if (!sil) {
+      c.lineWidth = 1.5; c.globalAlpha = 0.4;
+      for (let i = 1; i <= 3; i++) {
+        const tt = i / 4;
+        c.beginPath();
+        c.moveTo(lerp(-L * 0.16, L * 0.12, tt), -Hh * 0.52);
+        c.lineTo(lerp(-L * 0.14, L * 0.08, tt), -Hh * (0.52 + (1.9 - Math.abs(tt - 0.5) * 1.6) * (1 + wig)));
+        c.stroke();
+      }
+      c.globalAlpha = 1; c.lineWidth = 2.5;
+      c.fillStyle = 'rgba(20,32,52,0.35)';
+      for (let i = 0; i < 5; i++) {
+        const sx2 = lerp(-L * 0.12, L * 0.08, hash01(seed + 40 + i * 5.1));
+        const sy2 = -Hh * lerp(0.7, 1.5, hash01(seed + 60 + i * 3.3));
+        c.beginPath(); c.arc(sx2, sy2, L * 0.022, 0, TAU); c.fill();
+      }
+    }
+  } else if (f.shape === 'tank') { // stiff pointed dorsal
+    c.beginPath();
+    c.moveTo(L * 0.02, -Hh * 0.62);
+    c.lineTo(-L * 0.05, -Hh * (0.98 + wig * 0.5));
+    c.lineTo(-L * 0.17, -Hh * 0.5);
+    c.closePath(); c.fill(); c.stroke();
+  } else if (f.shape !== 'puff') { // soft curved dorsal
+    c.beginPath();
+    c.moveTo(-L * 0.02, -Hh * 0.56);
+    c.quadraticCurveTo(-L * 0.2, -Hh * (0.95 + wig), -L * 0.28, -Hh * 0.48);
+    c.fill(); c.stroke();
+  }
+
+  // ---- face ----
+  if (!sil) {
+    const eyeX = (f.shape === 'dart' || f.shape === 'sail') ? L * 0.3 : L * 0.26;
+    const eyeY = -Hh * (f.shape === 'tank' ? 0.22 : 0.16);
+    const eyeR = L * (opts.nervous ? 0.12 : 0.1);
+    if (opts.blink) { // mid-blink: a happy closed-eye arc
+      c.strokeStyle = FISH_INK; c.lineWidth = 2.5;
+      c.beginPath(); c.arc(eyeX, eyeY + eyeR * 0.2, eyeR * 0.7, Math.PI * 0.15, Math.PI * 0.85); c.stroke();
+    } else {
+      c.fillStyle = '#fff';
+      c.beginPath(); c.arc(eyeX, eyeY, eyeR, 0, TAU); c.fill(); c.stroke();
+      const pa = opts.pupilA ?? 0; // pupil looks along this angle (default: ahead)
+      const pr = L * (opts.nervous ? 0.05 : 0.035);
+      c.fillStyle = FISH_INK;
+      c.beginPath();
+      c.arc(eyeX + Math.cos(pa) * pr, eyeY - Math.sin(pa) * pr, L * (opts.nervous ? 0.035 : 0.045), 0, TAU);
+      c.fill();
+    }
+    const mouthX = (f.shape === 'dart' || f.shape === 'sail') ? L * 0.36 : L * 0.3;
+    if (opts.mouthOpen) { // open wide — boosting or about to chomp a snack
+      c.fillStyle = '#7c1f3d';
+      c.beginPath(); c.ellipse(mouthX, Hh * 0.16, L * 0.06, L * 0.08, 0.25, 0, TAU); c.fill(); c.stroke();
+    } else {
+      c.strokeStyle = FISH_INK;
+      c.beginPath(); c.arc(mouthX, Hh * 0.12, L * 0.12, 0.2, Math.PI * 0.7); c.stroke();
+    }
+    if (opts.worried) { // X eyes when sinking
+      c.fillStyle = '#fff';
+      c.fillRect(L * 0.16, -Hh * 0.3, L * 0.2, Hh * 0.28);
+      c.strokeStyle = FISH_INK; c.lineWidth = 2;
+      const ex = L * 0.26, ey = -Hh * 0.16, r = L * 0.06;
+      c.beginPath();
+      c.moveTo(ex - r, ey - r); c.lineTo(ex + r, ey + r);
+      c.moveTo(ex + r, ey - r); c.lineTo(ex - r, ey + r);
+      c.stroke();
+    }
   }
 }
 
