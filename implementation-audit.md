@@ -104,3 +104,54 @@ value, which is the only kind of test that would have caught the original bug.
   *and* `effectiveWavelen` decoupled from viewport width — the wave field's
   shape currently depends on the player's screen size, so two players on
   different devices do not share an ocean.
+
+## Follow-up: ramp launches and keyboard control
+
+Two requests: spacebar control for desktop, and a dive that feels closer to
+*Tiny Wings* — with the clarification that the fish can't glide along the
+water, but can be steered above it, so **hitting a correctly-angled wave
+should launch it**.
+
+**Keyboard** already worked end to end (hold Space to dive, tap to flip, Space
+drives menu/toss/swing). Nothing was missing but discoverability, so the hints
+now name it and `tests/ramp-launch.mjs` plays a full run on the keyboard alone.
+
+**Ramp launches.** Measured first: the opening swell peaks at a slope of
+**0.017 — about 1°** (open ocean reaches ~0.10). Reflecting off a surface
+normal that shallow redirects essentially nothing, which is why hitting a
+wave never felt like hitting a ramp. The face angle is now amplified into a
+launch, paid for out of forward speed so height is a real trade rather than a
+freebie, and the cost scales *down* with how well the face was hit — a clean
+launch keeps nearly all its speed, a clipped one bleeds it.
+
+Ramp quality is judged **relative to the steepest face locally available**,
+not against a fixed angle. A fixed target is what left the sweet-skip
+threshold dormant for the whole early game twice; the same trap was waiting
+here, since any constant tuned for open ocean never fires inshore. The
+telegraph reads from the same function the physics does, so marked faces and
+launching faces cannot drift apart. Gold chevrons float above rising faces —
+a tinted line lying on a 10px swell is invisible.
+
+Tuning notes worth keeping:
+
+- `RAMP_CALM_FLOOR` was 0.45, which squeezed calm water into a 0.45-0.54
+  quality band; clearing the celebration bar meant landing within ~8% of the
+  single steepest point in view, measured at **1-2 launch-worthy faces per
+  150m run**. At 0.70 calm water offers 3, mid 10, rough 14.
+- `RAMP_GAIN` started at 0.90 and launched impressively, but dropped the fish
+  back in near-vertically — where the grazing penalty punished it and the ramp
+  gate excluded it, collapsing the next hops into the 4px slide the skim-lift
+  work had just removed. 0.62 plus a minimum planing speed fixed it.
+- `grazeFrac` was double-penalising steep arrivals alongside the separate
+  belly-flop restitution penalty; softened 0.55 → 0.32.
+- **`SWEET_SKIP_STEEP` is gone.** It had been retuned three times, each time
+  silently making sweet skips unreachable or automatic in between. It is now
+  derived from the natural arrival angle a plain skim produces at the current
+  speed (`SWEET_SKIP_REL`), so it stays correct by construction when lift
+  changes.
+
+Measured after: distance **174m → 248m**, food per run 132 → 142 (flat), max
+altitude 305 → 319, ~5 ramps and ~4 sweet skips per run. The spread across
+runs is the point — high-ramp runs (8 ramps / 16 skips / 325m) trade skip
+chains for airtime, low-ramp runs (3 ramps / 33 skips / 7 sweet skips) stay
+low and fast.
