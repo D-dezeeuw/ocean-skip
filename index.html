@@ -406,7 +406,13 @@ const UPGRADES = [
   { id: 'sail',   icon: '🪁', name: 'Kite Fins', desc: '+10% tailwind pull, softer headwind per level' },
 ];
 const UP_MAX = 5;
-const upCost = (lvl) => Math.round(20 * Math.pow(2.15, lvl) / 5) * 5;
+// base bumped 20 -> 65: the skip-combo multiplier (points 6-10) roughly
+// tripled average per-run food income (combo-scaled pickups, Big Air,
+// near-misses, tricks — none of which existed against the original flat
+// "+1 per orb" economy this curve was tuned for), so the old base priced a
+// maxed track at ~8-10 runs; this keeps the curve's shape but retargets
+// ~25-35 runs per maxed track under the new income rate
+const upCost = (lvl) => Math.round(65 * Math.pow(2.15, lvl) / 5) * 5;
 
 /* ---------- save data ---------- */
 // v3 adds pearls + fish unlock progression. The v2 key is left untouched on
@@ -3511,6 +3517,7 @@ window.OceanSkips = {
   get fishList() { return FISH.map((f) => ({ id: f.id, unlock: { ...f.unlock } })); },
   grantPearls(n) { save.pearls += n; persist(); },   // test/debug helper
   MISSIONS, checkMissions,   // exposed for mission tests
+  get missions() { return save.missions.map((s) => ({ ...s, ...MISSIONS.find((m) => m.id === s.id) })); },
   setActiveMissions(ids) { save.missions = ids.map((id) => ({ id })); },   // test-only
   runScore, medalFor, MEDALS,   // exposed for results/medal tests
   get records() { return { ...save.records }; },
