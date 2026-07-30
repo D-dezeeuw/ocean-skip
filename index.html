@@ -120,6 +120,7 @@
   .chip { background: #04293aa8; color: #fff; border-radius: 999px; padding: 4px 14px;
     font-size: 14px; text-shadow: 0 1px 2px #000a; white-space: nowrap; }
   .chip small { opacity: .75; font-size: 10px; }
+  .chip.combo { background: linear-gradient(90deg, #ff9800, #d81b74); animation: pulse .5s infinite alternate; }
   #hint {
     position: fixed; top: calc(52px + env(safe-area-inset-top)); left: 0; right: 0;
     text-align: center; z-index: 5; color: #fff3d6; font-size: clamp(13px, 2.4vw, 16px);
@@ -179,6 +180,7 @@
   <span class="chip" id="hudSpeed">0 <small>km/h</small></span>
   <span class="chip" id="hudFood">🟡 0</span>
   <span class="chip hidden" id="hudWind">💨 0</span>
+  <span class="chip hidden combo" id="hudCombo">🔥 ×2</span>
 </div>
 <div id="energy" class="hidden"><span>🌶️</span><div class="ebar"><i id="efill"></i></div></div>
 <div id="hint" class="hidden"></div>
@@ -241,6 +243,7 @@ const TAU = Math.PI * 2;
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 const lerp = (a, b, t) => a + (b - a) * t;
 const rand = (a, b) => a + Math.random() * (b - a);
+const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 
 /* ---------- tuning ---------- */
 const G = 1500;                 // gravity px/s²
@@ -259,6 +262,11 @@ const BOOST_DRAIN = 30;         // energy per second
 const TRAIL_MAX = 22;           // motion-trail ribbon: max sampled points
 const TRAIL_DT = 0.018;         // seconds between trail samples (~55/s, not every physics tick)
 const SPEED_LINES_MIN = 1600;   // px/s above which speed-line streaks appear
+const SWEET_SKIP_STEEP = 0.28;  // contact must be this grazing (0=flat, 1=vertical) or shallower
+const SWEET_SKIP_SLOPE = 0.05;  // minimum downslope magnitude (s.slope) to count as a real wave face
+const TAP_MS = 0.18;            // press+release faster than this in flight = a flip, not a boost hold
+const FLIP_DUR = 0.55;          // seconds for one full backflip rotation
+const FLIP_QUEUE_MAX = 1;       // extra flips that can be queued while one is mid-rotation
 
 /* ---------- the luchador ---------- */
 const LUCHA = {
@@ -404,6 +412,13 @@ const sfx = {
   buy:     () => { tone(700, 0.08, { type: 'square', vol: 0.1 }); tone(1050, 0.12, { type: 'square', vol: 0.1, delay: 0.06 }); },
   nope:    () => tone(160, 0.18, { type: 'square', vol: 0.1, slide: -60 }),
   gust:    () => tone(220, 0.35, { type: 'sawtooth', vol: 0.14, slide: 90 }),
+  // rising arpeggio, pitched up per combo tier so tier 4 sounds noticeably
+  // more triumphant than tier 1
+  combo: (tier) => [0, 1, 2].forEach((i) => tone(440 + tier * 70 + i * 140, 0.1,
+    { type: 'square', vol: 0.09, delay: i * 0.05 })),
+  comboBreak: () => tone(280, 0.22, { type: 'sawtooth', vol: 0.12, slide: -180 }),
+  surf:    () => tone(520, 0.16, { type: 'sine', vol: 0.14, slide: 140 }),
+  trick:   () => [740, 988, 1318].forEach((f, i) => tone(f, 0.1, { type: 'triangle', vol: 0.1, delay: i * 0.055 })),
 };
 
 /* ---------- wind whoosh: continuous filtered noise, gain AND pitch track
@@ -886,6 +901,7 @@ let camShake = { amp: 0, t: 0 };  // decaying screen shake, applied inside w2sx/
 let hitstopT = 0;                 // seconds of physics-frozen "impact frame" remaining
 let fishDef = FISH.find(f => f.id === save.fish) || FISH[0];
 let held = false;     // pointer/space currently down (boost)
+let flyPressT = -1;   // time() of the last press that happened during 'fly' — tap vs hold
 
 const run = {
   x: 0, y: 0, vx: 0, vy: 0, wiggle: 0,
@@ -896,7 +912,21 @@ const run = {
   hopApex: 0,   // highest y reached since the last bounce — Big Air scoring
   squashT: -1,  // time of the last impact (swing contact / bounce) — drives squash&stretch
   trail: [],    // {x,y} ribbon of recent positions while flying — motion trail
+  combo: 0, comboBest: 0,   // clean-skip streak → food/Big-Air multiplier
+  sweetSkips: 0,
+  flip: null, flipQueue: 0, tricks: 0,   // tap-triggered backflip trick
 };
+const COMBO_TIER = 4;    // clean skips per multiplier step
+const MULT_MAX = 4;      // caps the multiplier at 1 + MULT_MAX = x5
+function mult() { return 1 + Math.min(MULT_MAX, Math.floor(run.combo / COMBO_TIER)); }
+// breaks the current combo (belly-flops, hazard hits) with a shared
+// popup+sfx — no-op (and silent) if there was nothing running to break
+function breakCombo(x, y) {
+  if (run.combo <= 0) return;
+  run.combo = 0;
+  popup('¡Combo roto! 💥', x, y + 40, { size: 20, color: '#ff8080' });
+  sfx.comboBreak();
+}
 const BIG_AIR_Y = 260; // world y a hop's apex must clear to score Big Air
 let bigAirCount = 0; // debug/test counter, not shown in-game
 
@@ -1106,6 +1136,9 @@ function startRun() {
   run.skips = 0; run.food = 0; run.dist = 0; run.sinkT = 0; run.spinning = 0;
   run.tossVy = 0; run.swingT = -1; run.lastBounceT = -1; run.zoneShown = 0; run.hopApex = TOSS_Y;
   run.squashT = -1; run.trail = [];
+  run.combo = 0; run.comboBest = 0; run.sweetSkips = 0;
+  run.flip = null; run.flipQueue = 0; run.tricks = 0;
+  flyPressT = -1;
   run.maxEnergy = st.maxEnergy;
   run.energy = Math.min(run.maxEnergy, 55 + save.up.chili * 8);
   cam.x = 0; cam.y = 0;
@@ -1159,7 +1192,7 @@ function swing() {
     camShake = { amp: 6 + 10 * q, t: 0 };
     puff(BAT_X - 34, 44, 7, '#e0b95e', 170, 650, 3, 0.4);   // sand kicked up at the luchador's feet
   }
-  setHint('Hold anywhere to BOOST 🌶️ — golden snacks refill energy!');
+  setHint('Hold to BOOST 🌶️, tap to flip 🌀 — golden snacks refill energy!');
 }
 function flop(msg) {
   popup(msg, run.x, run.y + 50, { size: 24, color: '#ffb0c8' });
@@ -1218,8 +1251,9 @@ function stepPhysics(dt) {
     // chili boost while held: speeds you up along your current heading AND
     // pulls you down into a dive — the longer you hold, the sooner/steeper
     // you come down, so you can choose where on the wave you land instead
-    // of always riding out the same arc
-    if (held && run.energy > 0) {
+    // of always riding out the same arc. Gated behind TAP_MS so a quick tap
+    // (which triggers a flip instead, on release) doesn't also nibble energy.
+    if (held && run.energy > 0 && time - flyPressT >= TAP_MS) {
       const sp = Math.hypot(run.vx, run.vy) || 1;
       run.vx += (run.vx / sp) * BOOST_ACC * dt;
       run.vy += (run.vy / sp) * BOOST_ACC * dt - BOOST_DIVE * dt;
@@ -1231,6 +1265,23 @@ function stepPhysics(dt) {
         x: run.x - rand(10, 26), y: run.y + rand(-8, 8),
         vx: -run.vx * 0.15, vy: rand(-30, 30),
         life: 0.35, maxLife: 0.35, size: rand(2, 5), color: '#ff9800', grav: 0 });
+    }
+
+    // backflip trick: a self-contained rotation clock, independent of the
+    // fish's velocity-aligned flight angle — completing one pays out food
+    // and combo; landing mid-rotation is handled as a belly-flop below
+    if (run.flip) {
+      run.flip.t += dt;
+      if (run.flip.t >= run.flip.dur) {
+        run.tricks++;
+        const gain = 2 * mult();
+        run.food += gain; save.food += gain;
+        run.combo += 2; run.comboBest = Math.max(run.comboBest, run.combo);
+        popup('¡Ole! Backflip 🌀', run.x, run.y + 50, { size: 22, color: '#ffd93b' });
+        sfx.trick();
+        if (run.flipQueue > 0) { run.flipQueue--; run.flip = { t: 0, dur: FLIP_DUR }; }
+        else run.flip = null;
+      }
     }
 
     // air drag + gravity (+ glide lift for the flying fish) — computed
@@ -1296,13 +1347,14 @@ function stepPhysics(dt) {
       }
       if (d < st.magnetR) {
         f.taken = true;
-        run.food++; save.food++;
+        const gain = mult();
+        run.food += gain; save.food += gain;
         run.energy = Math.min(run.maxEnergy, run.energy + ENERGY_FOOD);
         const spd = Math.hypot(run.vx, run.vy) || 1;
         run.vx += (run.vx / spd) * 90;      // small free kick
         run.vy += (run.vy / spd) * 90 + 40;
         sparkle(f.x, fy);
-        popup('+⚡', f.x, fy + 16, { size: 16, color: '#ffd93b', life: 0.7 });
+        popup(gain > 1 ? `+${gain}⚡` : '+⚡', f.x, fy + 16, { size: 16, color: '#ffd93b', life: 0.7 });
         sfx.collect();
       }
     }
@@ -1319,18 +1371,42 @@ function stepPhysics(dt) {
         const speed = Math.hypot(run.vx, run.vy);
         const steep = -vn / (speed || 1);            // 1 = dead-on plunge
         let e = st.bounce;
-        if (steep > 0.8) e *= clamp(1.55 - steep, 0.3, 1); // belly-flop penalty
+        // a grazing landing on a genuine downslope, in the direction of
+        // travel (s.slope < 0 means the surface descends as x increases) —
+        // rewards aiming the boost-dive at a wave face instead of just
+        // riding out whatever arc you happened to launch
+        const sweet = steep < SWEET_SKIP_STEEP && s.slope < -SWEET_SKIP_SLOPE && run.vx > 0;
+        // touching down mid-rotation (not right at launch or right before
+        // landing, where it barely reads as a flip) is treated the same as
+        // a bad belly-flop — a flat penalty rather than the steep-scaled
+        // one, since a flip can land at any contact angle
+        const flipFrac = run.flip ? run.flip.t / run.flip.dur : 0;
+        const midFlip = run.flip && flipFrac > 0.15 && flipFrac < 0.85;
+        if (midFlip) {
+          e *= 0.55;
+          breakCombo(run.x, run.y);
+          popup('¡Panza! 💥', run.x, run.y + 40, { size: 20, color: '#ff8080' });
+          run.flip = null; run.flipQueue = 0;
+        } else if (steep > 0.8) { e *= clamp(1.55 - steep, 0.3, 1); breakCombo(run.x, run.y); } // belly-flop penalty
         // decompose, reflect, add kick from the moving wave surface
         const tx = run.vx - vn * nx, ty = run.vy - vn * ny;
         run.vx = tx * 0.955 - vn * e * nx;
         run.vy = ty * 0.955 - vn * e * ny + Math.max(0, s.vy) * 0.6 * st.waveGrip;
         run.y = s.y + 0.5;
+        if (sweet) {
+          run.vx *= 1.06;
+          run.combo += 2; run.comboBest = Math.max(run.comboBest, run.combo);
+          run.sweetSkips = (run.sweetSkips || 0) + 1;
+          popup('¡Suave! ✨', run.x, run.y + 40, { size: 20, color: '#8ef0ff' });
+          sparkle(run.x, run.y, '#8ef0ff');
+          sfx.surf();
+        }
 
         // Big Air: reward the hop that just ended if its apex cleared
         // BIG_AIR_Y, rewarding the risky high arcs wind makes attractive —
         // then start tracking the next hop fresh
         if (run.hopApex > BIG_AIR_Y) {
-          const bonus = clamp(Math.round((run.hopApex - BIG_AIR_Y) / 45), 1, 6);
+          const bonus = clamp(Math.round((run.hopApex - BIG_AIR_Y) / 45), 1, 6) * mult();
           run.food += bonus; save.food += bonus;
           bigAirCount++;
           popup(`Big Air! +${bonus}🟡`, run.x, run.hopApex, { size: 22, color: '#ffd93b' });
@@ -1349,6 +1425,14 @@ function stepPhysics(dt) {
           if (time - run.lastBounceT > 0.09) {
             run.lastBounceT = time;
             run.skips++;
+            const tierBefore = Math.floor(run.combo / COMBO_TIER);
+            run.combo++;
+            run.comboBest = Math.max(run.comboBest, run.combo);
+            const tierAfter = Math.floor(run.combo / COMBO_TIER);
+            if (tierAfter > tierBefore && tierAfter <= MULT_MAX) {
+              popup(`COMBO ×${1 + tierAfter}!`, run.x, run.y + 60, { size: 24, color: '#ffd93b' });
+              sfx.combo(tierAfter);
+            }
             splash(run.x, s.y, speed * (0.4 + steep));
             for (let k = 0; k < 4; k++) spawnBubble(run.x + rand(-10, 10), s.y - rand(4, 20), { life: 0.6, minSize: 1.5, maxSize: 3 });
             foamPatches.push({ x: run.x, born: time, size: rand(16, 26) });
@@ -2142,7 +2226,12 @@ function drawFish() {
   let ang = 0;
   if (state === 'toss') ang = time * 6;                     // tumbling in the toss
   else if (state === 'sink') ang = Math.sin(run.spinning) * 0.6 + 0.5;
-  else if (state === 'fly') ang = -Math.atan2(run.vy, Math.max(80, run.vx));
+  else if (state === 'fly') {
+    ang = -Math.atan2(run.vy, Math.max(80, run.vx));
+    // a full rotation added on top of the velocity-aligned angle — lands
+    // back on the same visual angle exactly when the flip completes
+    if (run.flip) ang -= TAU * easeInOutCubic(clamp(run.flip.t / run.flip.dur, 0, 1));
+  }
   ctx.rotate(ang);
 
   // boost flame, drawn behind the tail (local -x) before the body
@@ -2224,6 +2313,31 @@ function drawSweetRing() {
     ctx.fillText('🎯', sx, sy + 5);
     ctx.textAlign = 'left';
   }
+}
+
+// faint shimmer over upcoming wave faces that would land a sweet skip,
+// so aiming the boost-dive at one is a readable choice rather than a
+// blind gamble — only shown while actually descending
+function drawSweetFaceTelegraph() {
+  if (REDUCED_MOTION || state !== 'fly' || run.vy >= 0) return;
+  const step = 20, endX = run.x + 600;
+  ctx.save();
+  ctx.lineWidth = 5;
+  ctx.lineCap = 'round';
+  for (let wx = run.x; wx < endX; wx += step) {
+    const mid = surfaceAt(wx, time);
+    if (mid.slope >= -SWEET_SKIP_SLOPE) continue;
+    const sx = w2sx(wx);
+    if (sx < -30 || sx > W + 30) continue;
+    const a = surfaceAt(wx - step * 0.5, time), b = surfaceAt(wx + step * 0.5, time);
+    const shimmer = 0.14 + 0.1 * Math.sin(time * 5 + wx * 0.02);
+    ctx.strokeStyle = `rgba(142,240,255,${shimmer.toFixed(3)})`;
+    ctx.beginPath();
+    ctx.moveTo(w2sx(wx - step * 0.5), w2sy(a.y));
+    ctx.lineTo(w2sx(wx + step * 0.5), w2sy(b.y));
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 // deterministic pseudo-random in [0,1) for a given number — used so kelp
@@ -2538,6 +2652,7 @@ function render() {
   drawLuchador();
   drawPicado();      // behind the action so the ring and fish stay readable
   drawSweetRing();
+  drawSweetFaceTelegraph();
   drawFoods();
   drawFish();
   if (state === 'sink') drawSinkOverlay();
@@ -2569,6 +2684,10 @@ function updateHud() {
   const showWind = Math.abs(wind.base) >= 25;
   $('hudWind').classList.toggle('hidden', !showWind);
   if (showWind) $('hudWind').textContent = (wind.dir > 0 ? '💨→ ' : '💨← ') + windKmh;
+  const m = mult();
+  const showCombo = state === 'fly' && m > 1;
+  $('hudCombo').classList.toggle('hidden', !showCombo);
+  if (showCombo) $('hudCombo').textContent = `🔥 ×${m}`;
 }
 
 /* ---------- menu / shop ---------- */
@@ -2643,14 +2762,25 @@ function buildShop() {
   }
 }
 
-/* ---------- input: one finger does everything ---------- */
+/* ---------- input: one finger does everything — hold = boost, a quick
+   tap (< TAP_MS) while airborne = a backflip trick instead ---------- */
+function tryStartFlip() {
+  const surf = surfaceAt(run.x, time);
+  if (run.y - surf.y <= 60) return; // not enough clearance to safely flip
+  if (!run.flip) run.flip = { t: 0, dur: FLIP_DUR };
+  else if (run.flipQueue < FLIP_QUEUE_MAX) run.flipQueue++;
+}
 function press() {
   audio();
   if (state === 'ready') toss();
   else if (state === 'toss') swing();
-  else if (state === 'fly') held = true;
+  else if (state === 'fly') { held = true; flyPressT = time; }
 }
-function release() { held = false; }
+function release() {
+  if (held && state === 'fly' && flyPressT >= 0 && time - flyPressT < TAP_MS) tryStartFlip();
+  held = false;
+  flyPressT = -1;
+}
 cvs.addEventListener('pointerdown', (e) => { e.preventDefault(); press(); });
 window.addEventListener('pointerup', release);
 window.addEventListener('pointercancel', release);
@@ -2747,8 +2877,11 @@ window.OceanSkips = {
   get state() { return state; },
   get snapshot() {
     return { state, x: run.x, y: run.y, vx: run.vx, vy: run.vy,
-             dist: run.dist, skips: run.skips, energy: run.energy };
+             dist: run.dist, skips: run.skips, energy: run.energy,
+             combo: run.combo, comboBest: run.comboBest, mult: mult(), sweetSkips: run.sweetSkips,
+             tricks: run.tricks, flip: run.flip ? { ...run.flip } : null, flipQueue: run.flipQueue };
   },
+  startFlip: tryStartFlip,   // test-only: force a flip attempt regardless of tap timing
   get view() {
     return { W, H, VS, DPR, seaLine: seaLine(), camX: cam.x, camY: cam.y,
              tossApex: TOSS_Y + 83 };
