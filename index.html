@@ -428,7 +428,14 @@ try {
   const raw = localStorage.getItem(SAVE_KEY);
   if (raw) {
     const s = JSON.parse(raw);
-    save = { ...save, ...s, up: { ...save.up, ...(s.up || {}) }, unlocked: { ...save.unlocked, ...(s.unlocked || {}) } };
+    // every nested object must be deep-merged over its defaults, not taken
+    // wholesale — a save written before a field existed would otherwise load
+    // that field as undefined, and `n > undefined` is false, so e.g. a newly
+    // added record would silently never fire again for existing players
+    save = { ...save, ...s,
+             up: { ...save.up, ...(s.up || {}) },
+             unlocked: { ...save.unlocked, ...(s.unlocked || {}) },
+             records: { ...save.records, ...(s.records || {}) } };
   } else {
     // first load under v3 — migrate an existing v2 save if there is one.
     // v2 had every fish free from the start, so grandfather in whichever
@@ -443,6 +450,11 @@ try {
   }
 } catch (e) { /* file:// or private mode — play without persistence */ }
 function persist() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} }
+// drop mission slots whose id no longer exists in the pool. Without this, a
+// removed/renamed MISSIONS entry leaves a slot that can never complete (its
+// def is never found) and never rotates out — but still counts toward the
+// 3-slot total, permanently starving the player of a live mission.
+save.missions = (save.missions || []).filter((slot) => MISSIONS.some((m) => m.id === slot.id));
 ensureMissions(); // guarantee 3 active slots whether this is a fresh save or one from before missions existed
 
 /* ---------- audio: tiny synth, zero assets ---------- */
@@ -1342,14 +1354,42 @@ const REDUCED_MOTION = !!(window.matchMedia && window.matchMedia('(prefers-reduc
 // them in reverse once headroom returns. Never touches gameplay-critical
 // rendering (fish, water contact, HUD).
 let smoothFrameMs = 16.7;
+// The thresholds are relative to the display's own healthy frame interval,
+// not absolute milliseconds. Absolute thresholds were a latent bug: on a
+// 60Hz vsync-locked display a *perfect* frame is 16.7ms, which sat above the
+// old 14ms restore cutoff and below the old 20ms drop cutoff — so once any
+// hitch dropped a layer it could never be restored for the rest of the
+// session, and a 30Hz-capped or power-saving device (33ms) stripped every
+// layer immediately no matter how much headroom it actually had.
+// frameBaseMs tracks the best sustained interval this device achieves:
+// adapts down quickly (a fast frame is proof of capability) and drifts up
+// only very slowly (so a genuinely slower display eventually re-baselines
+// instead of being punished forever).
+// frameBaseMs is the display's own refresh interval, measured as the fastest
+// frame seen during a short warmup and then held fixed. Measuring it (rather
+// than assuming 60Hz) is what makes a 30Hz-capped device read as healthy
+// instead of permanently degraded; freezing it (rather than letting it drift)
+// is what stops the scaler oscillating — a drifting baseline would chase the
+// very slowdown our own layers cause, restore them, and slow down again.
+let frameBaseMs = Infinity;      // resolved from observation during warmup
+let qualWarmup = 60;             // frames spent measuring the refresh interval
+const QUAL_DROP_RATIO = 1.35;    // sustained frames this much slower than baseline = we're dropping frames
+const QUAL_RESTORE_RATIO = 1.12; // back within this much of baseline = headroom to restore
 const quality = { causticsLayer2: true, rays: true, ambientBubbles: true };
 function updateQualityScaler(frameMs) {
-  smoothFrameMs = lerp(smoothFrameMs, clamp(frameMs, 0, 100), 0.1);
-  if (smoothFrameMs > 20) {
+  const ms = clamp(frameMs, 0, 100);
+  smoothFrameMs = lerp(smoothFrameMs, ms, 0.1);
+  if (qualWarmup > 0) {
+    // floor at 6ms so two coalesced rAF callbacks can't fake a 240Hz display
+    if (ms >= 6) frameBaseMs = Math.min(frameBaseMs, ms);
+    if (--qualWarmup === 0) frameBaseMs = clamp(isFinite(frameBaseMs) ? frameBaseMs : 16.7, 6, 40);
+    return; // don't judge quality until we know what "normal" is for this device
+  }
+  if (smoothFrameMs > frameBaseMs * QUAL_DROP_RATIO) {
     if (quality.causticsLayer2) quality.causticsLayer2 = false;
     else if (quality.rays) quality.rays = false;
     else if (quality.ambientBubbles) quality.ambientBubbles = false;
-  } else if (smoothFrameMs < 14) {
+  } else if (smoothFrameMs < frameBaseMs * QUAL_RESTORE_RATIO) {
     if (!quality.ambientBubbles) quality.ambientBubbles = true;
     else if (!quality.rays) quality.rays = true;
     else if (!quality.causticsLayer2) quality.causticsLayer2 = true;
