@@ -267,6 +267,9 @@ const SWEET_SKIP_SLOPE = 0.05;  // minimum downslope magnitude (s.slope) to coun
 const TAP_MS = 0.18;            // press+release faster than this in flight = a flip, not a boost hold
 const FLIP_DUR = 0.55;          // seconds for one full backflip rotation
 const FLIP_QUEUE_MAX = 1;       // extra flips that can be queued while one is mid-rotation
+const HAZARD_START_X = 2600;    // first hazard can appear this far out — early enough most runs meet one
+const HAZARD_HIT_R = { buoy: 30, gull: 26 };
+const NEAR_MISS_R = 110;        // px — flying this close to an unhit hazard credits a near-miss, once
 
 /* ---------- the luchador ---------- */
 const LUCHA = {
@@ -419,6 +422,11 @@ const sfx = {
   comboBreak: () => tone(280, 0.22, { type: 'sawtooth', vol: 0.12, slide: -180 }),
   surf:    () => tone(520, 0.16, { type: 'sine', vol: 0.14, slide: 140 }),
   trick:   () => [740, 988, 1318].forEach((f, i) => tone(f, 0.1, { type: 'triangle', vol: 0.1, delay: i * 0.055 })),
+  bonk:    () => { tone(110, 0.12, { type: 'square', vol: 0.22, slide: -40 }); noiseBurst(300, 0.1, { vol: 0.15, freqSlide: -150 }); },
+  squawk:  () => tone(700, 0.14, { type: 'sawtooth', vol: 0.14, slide: -320 }),
+  nearMiss: () => tone(1100, 0.08, { type: 'sine', vol: 0.1, slide: 260 }),
+  pearl:   () => [1200, 1600, 2000].forEach((f, i) => tone(f, 0.09, { type: 'sine', vol: 0.09, delay: i * 0.04 })),
+  chiliPickup: () => { tone(300, 0.2, { type: 'square', vol: 0.14, slide: 260 }); noiseBurst(900, 0.14, { vol: 0.1 }); },
 };
 
 /* ---------- wind whoosh: continuous filtered noise, gain AND pitch track
@@ -915,6 +923,7 @@ const run = {
   combo: 0, comboBest: 0,   // clean-skip streak → food/Big-Air multiplier
   sweetSkips: 0,
   flip: null, flipQueue: 0, tricks: 0,   // tap-triggered backflip trick
+  nearMisses: 0,
 };
 const COMBO_TIER = 4;    // clean skips per multiplier step
 const MULT_MAX = 4;      // caps the multiplier at 1 + MULT_MAX = x5
@@ -932,6 +941,8 @@ let bigAirCount = 0; // debug/test counter, not shown in-game
 
 let foods = [];        // {x, baseY, taken, phase}
 let nextFoodX = 0;
+let hazards = [];       // {type:'buoy'|'gull', x, y?, vx?, phase, hit, missCredited}
+let nextHazardX = HAZARD_START_X;
 let particles = [];    // {x,y,vx,vy,life,maxLife,size,color,grav,kind?}
 let popups = [];       // {str,x,y,t,life,size,color} — floating canvas text
 let foamPatches = [];  // {x, born, size} — persistent surface foam left by skips
@@ -999,6 +1010,39 @@ function spawnFoodAhead() {
     nextFoodX = cx + n * spread + rand(420, 950);
   }
   if (foods.length > 400) foods = foods.filter(f => f.x > cam.x - 600 && !f.taken);
+}
+
+/* ---------- hazards: buoys (surface) and seagulls (air) — first things
+   that can actually go wrong. Spacing tightens with distance the same way
+   wave roughness does, so a run gets more dangerous exactly as it gets
+   harder to skim. Clones spawnFoodAhead's distance-seeded spawner
+   pattern. ---------- */
+function spawnHazardsAhead() {
+  const horizon = cam.x + W * 2.2;
+  while (nextHazardX < horizon) {
+    const t = clamp(nextHazardX / OPEN_OCEAN, 0, 1);
+    const spacing = rand(lerp(1400, 700, t), lerp(1900, 1100, t));
+    if (Math.random() < 0.55) {
+      hazards.push({ type: 'buoy', x: nextHazardX, hit: false, missCredited: false, phase: rand(0, TAU) });
+    } else {
+      hazards.push({ type: 'gull', x: nextHazardX, y: rand(250, 450), vx: -40,
+        hit: false, missCredited: false, phase: rand(0, TAU) });
+    }
+    nextHazardX += spacing;
+  }
+  if (hazards.length > 200) hazards = hazards.filter(h => h.x > cam.x - 600);
+}
+function stepHazards(dt) {
+  for (const hz of hazards) if (hz.type === 'gull') hz.x += hz.vx * dt;
+}
+// current on-screen position — buoys bob on the wave itself, gulls have a
+// gentle wing-flap bob around their cruising altitude
+function hazardPos(hz, t) {
+  if (hz.type === 'buoy') {
+    const s = surfaceAt(hz.x, t);
+    return { x: hz.x, y: s.y + 16 + Math.sin(t * 1.6 + hz.phase) * 4 };
+  }
+  return { x: hz.x, y: hz.y + Math.sin(t * 2.4 + hz.phase) * 6 };
 }
 
 /* ---------- particles & popups ---------- */
@@ -1145,6 +1189,8 @@ function startRun() {
   held = false;
   foods = []; nextFoodX = 800; particles = []; popups = [];
   gustEvents = []; nextGustX = 1500; thermals = []; nextThermalX = 2200; gustBoostT = 0;
+  hazards = []; nextHazardX = HAZARD_START_X;
+  run.nearMisses = 0;
   showScreen(null);
   hud(true);
   let windHint = '';
@@ -1356,6 +1402,40 @@ function stepPhysics(dt) {
         sparkle(f.x, fy);
         popup(gain > 1 ? `+${gain}⚡` : '+⚡', f.x, fy + 16, { size: 16, color: '#ffd93b', life: 0.7 });
         sfx.collect();
+      }
+    }
+
+    // hazards: a hit slows/knocks the fish and breaks the combo; grazing
+    // close without touching one is rewarded once as a near-miss — courage
+    // pays, but only if it doesn't turn into contact
+    for (const hz of hazards) {
+      if (hz.hit || Math.abs(hz.x - run.x) > 400) continue;
+      const p = hazardPos(hz, time);
+      const d = Math.hypot(p.x - run.x, p.y - run.y);
+      if (d < HAZARD_HIT_R[hz.type]) {
+        hz.hit = true;
+        breakCombo(run.x, run.y);
+        if (!REDUCED_MOTION) camShake = { amp: 8, t: 0 };
+        if (hz.type === 'buoy') {
+          run.vx *= 0.5;
+          run.vy = Math.max(run.vy, 220);
+          puff(p.x, p.y, 10, '#8a5a2b', 260, 900, 4, 0.5);
+          popup('¡BONK! 🥊', run.x, run.y + 40, { size: 22, color: '#ffb0c8' });
+          sfx.bonk();
+        } else {
+          run.vy -= 250;
+          puff(p.x, p.y, 8, '#ffffff', 220, 500, 3, 0.5);
+          popup('¡Squawk! 🕊️', run.x, run.y + 40, { size: 22, color: '#ffb0c8' });
+          sfx.squawk();
+        }
+      } else if (!hz.missCredited && d < NEAR_MISS_R) {
+        hz.missCredited = true;
+        const gain = 3 * mult();
+        run.food += gain; save.food += gain;
+        run.combo++; run.comboBest = Math.max(run.comboBest, run.combo);
+        run.nearMisses++;
+        popup('¡Cerquita! ✨', p.x, p.y + 30, { size: 18, color: '#8ef0ff' });
+        sfx.nearMiss();
       }
     }
 
@@ -2580,6 +2660,45 @@ function drawFoods() {
   }
 }
 
+function drawHazards() {
+  for (const hz of hazards) {
+    if (hz.hit) continue; // hit ones vanish — the debris puff already sold the impact
+    const p = hazardPos(hz, time);
+    const sx = w2sx(p.x), sy = w2sy(p.y);
+    if (sx < -60 || sx > W + 60) continue;
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.lineWidth = 2.5; ctx.strokeStyle = FISH_INK;
+    if (hz.type === 'buoy') {
+      ctx.fillStyle = '#e6473a';
+      ctx.beginPath();
+      ctx.moveTo(-13, 11); ctx.lineTo(-9, -14); ctx.lineTo(9, -14); ctx.lineTo(13, 11);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath(); ctx.rect(-11, -5, 22, 7); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#ffd93b';
+      ctx.beginPath(); ctx.arc(0, -18, 4, 0, TAU); ctx.fill(); ctx.stroke();
+    } else {
+      const flap = Math.sin(time * 10 + hz.phase) * 0.6;
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.moveTo(-1, 0); ctx.quadraticCurveTo(-20, -8 - flap * 14, -30, 3 - flap * 10);
+      ctx.quadraticCurveTo(-13, 5, -1, 2);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(1, 0); ctx.quadraticCurveTo(20, -8 - flap * 14, 30, 3 - flap * 10);
+      ctx.quadraticCurveTo(13, 5, 1, 2);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(0, 0, 10, 6, 0, 0, TAU); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#ffb347';
+      ctx.beginPath(); ctx.moveTo(9, -2); ctx.lineTo(16, 0); ctx.lineTo(9, 2); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = FISH_INK;
+      ctx.beginPath(); ctx.arc(5, -2, 1.4, 0, TAU); ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
 function drawParticles() {
   for (const p of particles) {
     const sx = w2sx(p.x), sy = w2sy(p.y);
@@ -2654,6 +2773,7 @@ function render() {
   drawSweetRing();
   drawSweetFaceTelegraph();
   drawFoods();
+  drawHazards();
   drawFish();
   if (state === 'sink') drawSinkOverlay();
   drawParticles();
@@ -2860,6 +2980,8 @@ function frame(now) {
   spawnFoodAhead();
   spawnGustsAhead();
   spawnThermalsAhead();
+  spawnHazardsAhead();
+  stepHazards(dt);
   stepBubbleColumns(dt);
   stepWindStreaks(dt);
   stepParticles(dt);
@@ -2879,9 +3001,16 @@ window.OceanSkips = {
     return { state, x: run.x, y: run.y, vx: run.vx, vy: run.vy,
              dist: run.dist, skips: run.skips, energy: run.energy,
              combo: run.combo, comboBest: run.comboBest, mult: mult(), sweetSkips: run.sweetSkips,
-             tricks: run.tricks, flip: run.flip ? { ...run.flip } : null, flipQueue: run.flipQueue };
+             tricks: run.tricks, flip: run.flip ? { ...run.flip } : null, flipQueue: run.flipQueue,
+             nearMisses: run.nearMisses };
   },
   startFlip: tryStartFlip,   // test-only: force a flip attempt regardless of tap timing
+  get hazards() { return hazards.map(h => ({ ...h })); },
+  spawnHazard(x, type) {   // test-only: place a hazard directly, bypassing the distance spawner
+    hazards.push(type === 'gull'
+      ? { type: 'gull', x, y: 300, vx: -40, hit: false, missCredited: false, phase: 0 }
+      : { type: 'buoy', x, hit: false, missCredited: false, phase: 0 });
+  },
   get view() {
     return { W, H, VS, DPR, seaLine: seaLine(), camX: cam.x, camY: cam.y,
              tossApex: TOSS_Y + 83 };
